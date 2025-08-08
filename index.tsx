@@ -363,8 +363,7 @@ const App: React.FC = () => {
         }
     };
 
-    // Refresh prices automatically after login/landing when there are open positions
-    const didInitialPricesRefresh = useRef(false);
+    
 
     const handleSignOut = async () => {
         try {
@@ -504,7 +503,7 @@ const App: React.FC = () => {
 
     // Autocomplete state
     const [suggestions, setSuggestions] = useState<string[]>([]);
-    const debounceRef = useRef<NodeJS.Timeout | null>(null);
+    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastQueryRef = useRef<string>("");
     
     // AI Client - removed as we're using direct APIs now
@@ -604,14 +603,6 @@ const App: React.FC = () => {
         }
         return closed;
     }, [allSummaries]);
-
-    // First auto-refresh when dashboard becomes active (before renders that return)
-    useEffect(() => {
-        if (view === 'dashboard' && !didInitialPricesRefresh.current) {
-            didInitialPricesRefresh.current = true;
-            fetchCurrentPricesForOpenPortfolio();
-        }
-    }, [view, fetchCurrentPricesForOpenPortfolio]);
 
     const portfolioSummary = useMemo(() => {
         return allSummaries.reduce((acc, { summary }) => {
@@ -1877,14 +1868,7 @@ const App: React.FC = () => {
         );
     }
 
-    // Safe post-render effect to refresh prices once when arriving to dashboard
-    useEffect(() => {
-        if (view !== 'dashboard') return;
-        if (!didInitialPricesRefresh.current) {
-            didInitialPricesRefresh.current = true;
-            fetchCurrentPricesForOpenPortfolio();
-        }
-    }, [view]);
+    
 
     return (
         <div className="app-container">
