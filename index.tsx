@@ -56,6 +56,54 @@ const AppLogo = () => (
   </svg>
 );
 
+// --- US Indices Widget (TradingView) ---
+const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    containerRef.current.innerHTML = '';
+    const script = document.createElement('script');
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js';
+    script.type = 'text/javascript';
+    script.async = true;
+    script.innerHTML = JSON.stringify({
+      colorTheme: dark ? 'dark' : 'light',
+      dateRange: '1M',
+      showChart: true,
+      locale: 'en',
+      width: '100%',
+      height: '320',
+      isTransparent: false,
+      showSymbolLogo: true,
+      tabs: [
+        {
+          title: 'US Indices',
+          symbols: [
+            { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
+            { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
+            { s: 'DJ:DJI', d: 'Dow Jones' },
+            { s: 'AMEX:IWM', d: 'Russell 2000' }
+          ]
+        }
+      ]
+    });
+    const widget = document.createElement('div');
+    widget.className = 'tradingview-widget-container__widget';
+    containerRef.current.appendChild(widget);
+    containerRef.current.appendChild(script);
+    return () => {
+      if (containerRef.current) containerRef.current.innerHTML = '';
+    };
+  }, [dark]);
+
+  return (
+    <div className="card indices-card">
+      <div className="tradingview-widget-container" ref={containerRef} />
+    </div>
+  );
+};
+
 // --- Tabs Navigation ---
 type MainView = 'dashboard' | 'performance' | 'analytics' | 'settings';
 
@@ -820,6 +868,8 @@ const App: React.FC = () => {
 
         return (
             <>
+                {/* US Indices charts */}
+                <IndicesWidget dark={isDarkTheme} />
                 <div className="card" style={{ position: 'relative' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h2 style={{ borderBottom: '2px solid var(--primary-color)', paddingBottom: '10px', marginBottom: '20px', width: '100%' }}>קניית מניה חדשה</h2>

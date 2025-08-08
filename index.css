@@ -95,6 +95,11 @@ body {
   text-align: center;
 }
 
+/* Indices widget card */
+.indices-card {
+  margin-bottom: 16px;
+}
+
 .brand {
   display: flex;
   align-items: center;
