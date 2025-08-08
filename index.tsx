@@ -66,7 +66,7 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
   const symbols: Array<{ s: string; d: string }> = [
     { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
     { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
-    { s: 'DJ:DJI', d: 'Dow Jones' },
+    { s: 'FOREXCOM:US30USD', d: 'Dow Jones' },
     { s: 'AMEX:IWM', d: 'Russell 2000' }
   ];
 
