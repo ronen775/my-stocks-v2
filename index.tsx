@@ -605,6 +605,14 @@ const App: React.FC = () => {
         return closed;
     }, [allSummaries]);
 
+    // First auto-refresh when dashboard becomes active (before renders that return)
+    useEffect(() => {
+        if (view === 'dashboard' && !didInitialPricesRefresh.current) {
+            didInitialPricesRefresh.current = true;
+            fetchCurrentPricesForOpenPortfolio();
+        }
+    }, [view, fetchCurrentPricesForOpenPortfolio]);
+
     const portfolioSummary = useMemo(() => {
         return allSummaries.reduce((acc, { summary }) => {
             if (summary.remainingQuantity > 0) {
