@@ -364,8 +364,8 @@ const App: React.FC = () => {
     const handleSignOut = async () => {
         try {
             // Try to save before sign out; do not block sign out on failure
-            try {
-                await saveUserDataToFirebase();
+        try {
+            await saveUserDataToFirebase();
             } catch (saveError) {
                 console.warn('Save before sign out failed (continuing):', saveError);
             }
@@ -884,11 +884,16 @@ const App: React.FC = () => {
     const renderDashboard = () => {
         const filteredTransactions = dashboardFilter === 'open' ? openTransactions : closedTransactions;
 
+    // Trigger one-time price refresh when dashboard becomes active
+    useEffect(() => {
+      if (view === 'dashboard') {
+        fetchCurrentPricesForOpenPortfolio();
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [view]);
+
         return (
             <>
-        {/* Refresh current prices once on initial mount of dashboard */}
-        {/* eslint-disable-next-line react-hooks/exhaustive-deps */}
-        {useEffect(() => { fetchCurrentPricesForOpenPortfolio(); }, [])}
                 {/* US Indices charts */}
                 <IndicesWidget dark={isDarkTheme} />
                 <div className="card" style={{ position: 'relative' }}>
@@ -918,7 +923,7 @@ const App: React.FC = () => {
                 </div>
                 <div className="card">
                     <div className="card-header-with-action">
-                        <h2>סיכום תיק מניות - {dashboardFilter === 'open' ? 'עסקאות פתוחות' : 'עסקאות סגורות'}</h2>
+                         <h2>סיכום תיק מניות - {dashboardFilter === 'open' ? 'עסקאות פתוחות' : 'עסקאות סגורות'}</h2>
                     </div>
                     <div className="summary-grid">
                         <div className="summary-item">
@@ -1580,7 +1585,7 @@ const App: React.FC = () => {
         return (
             <div className="analytics-page">
                 <div className="card">
-                    <h2>סטטיסטיקות מתקדמות</h2>
+                        <h2>סטטיסטיקות מתקדמות</h2>
                     
                     {/* Portfolio Overview */}
                     <div className="kpi-cards">
@@ -1865,7 +1870,7 @@ const App: React.FC = () => {
             <header className="app-header">
                 <div className="brand">
                   <AppLogo />
-                  <h1>מחשבון רווח והפסד למניות</h1>
+                <h1>מחשבון רווח והפסד למניות</h1>
                 </div>
                 <div className="user-info">
                     <span className="user-name">{user.displayName || user.email}</span>
