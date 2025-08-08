@@ -363,14 +363,17 @@ const App: React.FC = () => {
         }
     };
 
-    // Refresh prices once on first dashboard mount
+    // Refresh prices automatically after login/landing when there are open positions
     const didInitialPricesRefresh = useRef(false);
     useEffect(() => {
-        if (!didInitialPricesRefresh.current && view === 'dashboard') {
+        if (view !== 'dashboard') return;
+        const hasOpen = allSummaries.some(({ summary }) => summary.remainingQuantity > 0);
+        if (hasOpen && !didInitialPricesRefresh.current) {
             didInitialPricesRefresh.current = true;
+            // intentionally omit from deps to avoid TDZ issues
             fetchCurrentPricesForOpenPortfolio();
         }
-    }, [view]);
+    }, [view, allSummaries]);
 
     const handleSignOut = async () => {
         try {
