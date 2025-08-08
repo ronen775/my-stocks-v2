@@ -17,13 +17,20 @@ if (!firebaseConfig.apiKey || !firebaseConfig.authDomain || !firebaseConfig.proj
   console.error('Missing Firebase env configuration. Ensure VITE_* vars are set at build time.');
 }
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+// Detect configuration presence
+const isFirebaseConfigured: boolean = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.authDomain &&
+  firebaseConfig.projectId
+);
+
+// Initialize Firebase only when configured
+const app = isFirebaseConfigured ? initializeApp(firebaseConfig) : undefined as unknown as ReturnType<typeof initializeApp>;
+const auth = isFirebaseConfigured ? getAuth(app) : undefined as unknown as ReturnType<typeof getAuth>;
+const db = isFirebaseConfigured ? getFirestore(app) : undefined as unknown as ReturnType<typeof getFirestore>;
 
 // Feature flag to allow disabling Firestore usage in dev until rules are set
-export const isFirestoreEnabled: boolean = (import.meta as any).env?.VITE_ENABLE_FIRESTORE !== 'false';
+export const isFirestoreEnabled: boolean = ((import.meta as any).env?.VITE_ENABLE_FIRESTORE === 'true') && isFirebaseConfigured;
 
 // Avoid logging full config or secrets in production
 
@@ -33,22 +40,27 @@ if (!isFirestoreEnabled) {
 }
 
 // Google Auth Provider
-const googleProvider = new GoogleAuthProvider();
+const googleProvider = isFirebaseConfigured ? new GoogleAuthProvider() : undefined;
 
 // Auth functions
 export const signInWithGoogle = async () => {
   try {
-    const result = await signInWithPopup(auth, googleProvider);
+    if (!isFirebaseConfigured) {
+      throw new Error('Firebase is not configured in this build.');
+    }
+    const result = await signInWithPopup(auth, googleProvider!);
     return result.user;
   } catch (error) {
     console.warn('Popup sign-in failed, trying redirect...', error);
-    await signInWithRedirect(auth, googleProvider);
+    if (!isFirebaseConfigured) throw error;
+    await signInWithRedirect(auth, googleProvider!);
     return null as any;
   }
 };
 
 export const signOutUser = async () => {
   try {
+    if (!isFirebaseConfigured) return;
     console.log('Firebase signOut called');
     await signOut(auth);
     console.log('Firebase signOut successful');
@@ -59,7 +71,7 @@ export const signOutUser = async () => {
 };
 
 export const getCurrentUser = (): User | null => {
-  return auth.currentUser;
+  return isFirebaseConfigured ? auth.currentUser : null;
 };
 
 // Firestore functions for user data
@@ -71,7 +83,7 @@ export const saveUserData = async (userId: string, data: any) => {
     }
     console.log('Attempting to save user data for:', userId);
     console.log('Data to save:', data);
-    await setDoc(doc(db, 'users', userId), data, { merge: true });
+    await setDoc(doc(db!, 'users', userId), data, { merge: true });
     console.log('User data saved successfully');
   } catch (error) {
     console.error('Error saving user data:', error);
@@ -90,7 +102,7 @@ export const getUserData = async (userId: string) => {
       console.warn('getUserData skipped: Firestore disabled');
       return null;
     }
-    const docRef = doc(db, 'users', userId);
+    const docRef = doc(db!, 'users', userId);
     const docSnap = await getDoc(docRef);
     
     if (docSnap.exists()) {
@@ -106,6 +118,10 @@ export const getUserData = async (userId: string) => {
 
 // Auth state listener
 export const onAuthStateChange = (callback: (user: User | null) => void) => {
+  if (!isFirebaseConfigured) {
+    callback(null);
+    return () => {};
+  }
   return onAuthStateChanged(auth, callback);
 };
 
