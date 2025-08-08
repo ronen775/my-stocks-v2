@@ -323,12 +323,7 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
-    // Refresh prices when entering dashboard view
-    useEffect(() => {
-        if (view === 'dashboard') {
-            fetchCurrentPricesForOpenPortfolio();
-        }
-    }, [view, fetchCurrentPricesForOpenPortfolio]);
+    
 
     const loadUserData = async (userId: string) => {
         try {
@@ -367,6 +362,15 @@ const App: React.FC = () => {
             setIsLoading(false);
         }
     };
+
+    // Refresh prices once on first dashboard mount
+    const didInitialPricesRefresh = useRef(false);
+    useEffect(() => {
+        if (!didInitialPricesRefresh.current && view === 'dashboard') {
+            didInitialPricesRefresh.current = true;
+            fetchCurrentPricesForOpenPortfolio();
+        }
+    }, [view]);
 
     const handleSignOut = async () => {
         try {
