@@ -66,31 +66,36 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
   const symbols: Array<{ s: string; d: string }> = [
     { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
     { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
-    { s: 'TVC:DJI', d: 'Dow Jones' },
+    { s: 'FOREXCOM:US30USD', d: 'Dow Jones' },
     { s: 'AMEX:IWM', d: 'Russell 2000' }
   ];
 
   useEffect(() => {
     if (!chartRef.current) return;
     chartRef.current.innerHTML = '';
+    const containerId = `tradingview_adv_${Date.now()}`;
+    const inner = document.createElement('div');
+    inner.id = containerId;
+    inner.style.width = '100%';
+    inner.style.height = '320px';
+    chartRef.current.appendChild(inner);
+
     const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js';
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
     script.type = 'text/javascript';
     script.async = true;
     script.innerHTML = JSON.stringify({
-      symbols: [[`${selected.s}|1D`]],
-      chartOnly: false,
-      width: '100%',
-      height: '320',
+      autosize: true,
+      container_id: containerId,
+      symbol: selected.s,
+      interval: 'D',
+      timezone: 'Etc/UTC',
+      theme: dark ? 'dark' : 'light',
+      style: '1',
       locale: 'en',
-      colorTheme: dark ? 'dark' : 'light',
-      isTransparent: false,
-      showVolume: false,
-      lineWidth: 2
+      allow_symbol_change: false,
+      hide_volume: true
     });
-    const widget = document.createElement('div');
-    widget.className = 'tradingview-widget-container__widget';
-    chartRef.current.appendChild(widget);
     chartRef.current.appendChild(script);
     return () => {
       if (chartRef.current) chartRef.current.innerHTML = '';
