@@ -56,50 +56,67 @@ const AppLogo = () => (
   </svg>
 );
 
-// --- US Indices Widget (TradingView) ---
+// --- US Indices Widget (TradingView) side-by-side: chart left, list right ---
 const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const [selected, setSelected] = useState<{ s: string; d: string }>(
+    { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' }
+  );
+
+  const symbols: Array<{ s: string; d: string }> = [
+    { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
+    { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
+    { s: 'DJ:DJI', d: 'Dow Jones' },
+    { s: 'AMEX:IWM', d: 'Russell 2000' }
+  ];
 
   useEffect(() => {
-    if (!containerRef.current) return;
-    containerRef.current.innerHTML = '';
+    if (!chartRef.current) return;
+    chartRef.current.innerHTML = '';
     const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-market-overview.js';
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js';
     script.type = 'text/javascript';
     script.async = true;
     script.innerHTML = JSON.stringify({
-      colorTheme: dark ? 'dark' : 'light',
-      dateRange: '1M',
-      showChart: true,
-      locale: 'en',
+      symbols: [[selected.s, selected.d]],
+      chartOnly: false,
       width: '100%',
-      height: '320',
+      height: 320,
+      locale: 'en',
+      colorTheme: dark ? 'dark' : 'light',
       isTransparent: false,
-      showSymbolLogo: true,
-      tabs: [
-        {
-          title: 'US Indices',
-          symbols: [
-            { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
-            { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
-            { s: 'DJ:DJI', d: 'Dow Jones' },
-            { s: 'AMEX:IWM', d: 'Russell 2000' }
-          ]
-        }
-      ]
+      autosize: true,
+      showVolume: false,
+      lineWidth: 2,
+      dateRanges: ['1D','1W','1M','3M','6M','12M','60M','ALL']
     });
     const widget = document.createElement('div');
     widget.className = 'tradingview-widget-container__widget';
-    containerRef.current.appendChild(widget);
-    containerRef.current.appendChild(script);
+    chartRef.current.appendChild(widget);
+    chartRef.current.appendChild(script);
     return () => {
-      if (containerRef.current) containerRef.current.innerHTML = '';
+      if (chartRef.current) chartRef.current.innerHTML = '';
     };
-  }, [dark]);
+  }, [selected, dark]);
 
   return (
     <div className="card indices-card">
-      <div className="tradingview-widget-container" ref={containerRef} />
+      <div className="indices-grid">
+        <div className="indices-chart tradingview-widget-container" ref={chartRef} />
+        <div className="indices-list">
+          <div className="indices-title">מדדי ארה"ב</div>
+          {symbols.map(sym => (
+            <button
+              key={sym.s}
+              className={'indices-item' + (selected.s === sym.s ? ' active' : '')}
+              onClick={() => setSelected(sym)}
+              type="button"
+            >
+              {sym.d}
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 };
