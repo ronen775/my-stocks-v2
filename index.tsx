@@ -1816,6 +1816,13 @@ const App: React.FC = () => {
                         <div className="form-group"><label>שיעור עמלה (%)</label><input type="number" name="commissionRate" value={settings.commissionRate * 100} onChange={handleSettingsChange}/></div>
                         <div className="form-group"><label>עמלה נוספת ($)</label><input type="number" name="additionalFee" value={settings.additionalFee} onChange={handleSettingsChange}/></div>
                         <div className="form-group"><label>שיעור מס רווחי הון (%)</label><input type="number" name="taxRate" value={settings.taxRate * 100} onChange={handleSettingsChange}/></div>
+                        <div className="form-group">
+                            <label>ערכת צבע</label>
+                            <select value={isDarkTheme ? 'dark' : 'light'} onChange={(e) => setIsDarkTheme(e.target.value === 'dark')}>
+                                <option value="light">בהיר</option>
+                                <option value="dark">כהה</option>
+                            </select>
+                        </div>
                     </div>
                     <div className="settings-actions-header">
                         <button onClick={handleManualSave} title="שמור תיק" className="btn-save-inline">
@@ -1911,15 +1918,7 @@ const App: React.FC = () => {
             </main>
             {/* הגדרות עברו ללשונית ייעודית */}
             
-            {/* Theme Toggle Button */}
-            <button
-                className="theme-toggle"
-                onClick={toggleTheme}
-                title={isDarkTheme ? "עבור לעיצוב בהיר" : "עבור לעיצוב כהה"}
-            >
-                <SunIcon />
-                <MoonIcon />
-            </button>
+            {/* Theme toggle moved into Settings page */}
             
 
             
