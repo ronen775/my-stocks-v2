@@ -78,17 +78,15 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
     script.type = 'text/javascript';
     script.async = true;
     script.innerHTML = JSON.stringify({
-      symbols: [[selected.s, selected.d]],
+      symbols: [[selected.s]],
       chartOnly: false,
       width: '100%',
-      height: 320,
+      height: '320',
       locale: 'en',
       colorTheme: dark ? 'dark' : 'light',
       isTransparent: false,
-      autosize: true,
       showVolume: false,
-      lineWidth: 2,
-      dateRanges: ['1D','1W','1M','3M','6M','12M','60M','ALL']
+      lineWidth: 2
     });
     const widget = document.createElement('div');
     widget.className = 'tradingview-widget-container__widget';
@@ -102,7 +100,10 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
   return (
     <div className="card indices-card">
       <div className="indices-grid">
-        <div className="indices-chart tradingview-widget-container" ref={chartRef} />
+        <div className="indices-chart tradingview-widget-container">
+          <div className="tradingview-widget-container__widget" />
+          <div ref={chartRef} />
+        </div>
         <div className="indices-list">
           <div className="indices-title">מדדי ארה"ב</div>
           {symbols.map(sym => (
