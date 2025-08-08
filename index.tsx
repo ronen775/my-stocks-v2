@@ -66,7 +66,7 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
   const symbols: Array<{ s: string; d: string }> = [
     { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
     { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
-    { s: 'FOREXCOM:US30USD', d: 'Dow Jones' },
+    { s: 'TVC:DJI', d: 'Dow Jones' },
     { s: 'AMEX:IWM', d: 'Russell 2000' }
   ];
 
@@ -78,7 +78,7 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
     script.type = 'text/javascript';
     script.async = true;
     script.innerHTML = JSON.stringify({
-      symbols: [[selected.s]],
+      symbols: [[`${selected.s}|1D`]],
       chartOnly: false,
       width: '100%',
       height: '320',
@@ -100,10 +100,7 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
   return (
     <div className="card indices-card">
       <div className="indices-grid">
-        <div className="indices-chart tradingview-widget-container">
-          <div className="tradingview-widget-container__widget" />
-          <div ref={chartRef} />
-        </div>
+        <div className="indices-chart tradingview-widget-container" ref={chartRef} />
         <div className="indices-list">
           <div className="indices-title">מדדי ארה"ב</div>
           {symbols.map(sym => (
