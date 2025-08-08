@@ -52,6 +52,22 @@ body {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
 
+/* Responsive layout */
+@media (max-width: 1024px) {
+  .app-container { width: 92%; }
+}
+
+@media (max-width: 768px) {
+  .app-container { width: 96%; padding: 0 8px; }
+  .app-header { flex-direction: column; gap: 10px; }
+  .tab-nav { flex-wrap: wrap; }
+}
+
+@media (max-width: 480px) {
+  .tab-item { padding: 10px 12px; }
+  .app-header h1 { font-size: 1.1rem; }
+}
+
 #root {
   display: flex;
   justify-content: center;
@@ -59,8 +75,9 @@ body {
 }
 
 .app-container {
-  width: 100%;
-  max-width: 900px;
+  width: 85%;
+  max-width: 1400px;
+  margin: 0 auto;
 }
 
 .app-header {
