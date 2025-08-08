@@ -24,6 +24,24 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Verify Firebase secrets
+        run: |
+          set -e
+          check() { var="$1"; if [ -z "${!var}" ]; then echo "Missing $var"; exit 1; else echo "$var OK"; fi; }
+          check VITE_FIREBASE_API_KEY
+          check VITE_FIREBASE_AUTH_DOMAIN
+          check VITE_FIREBASE_PROJECT_ID
+          check VITE_FIREBASE_STORAGE_BUCKET
+          check VITE_FIREBASE_MESSAGING_SENDER_ID
+          check VITE_FIREBASE_APP_ID
+        shell: bash
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
       - name: Build
         run: npm run build
         env:
