@@ -11,6 +11,19 @@
     <link rel="stylesheet" href="index.css" />
   </head>
   <body>
+    <script>
+      // Minimal runtime error reporter to avoid white screen without info
+      (function(){
+        const show = (msg) => {
+          const el = document.createElement('pre');
+          el.style.cssText = 'white-space:pre-wrap;direction:ltr;text-align:left;padding:12px;margin:0;background:#1f2937;color:#f8fafc;position:fixed;inset:0;z-index:99999;overflow:auto;font:12px ui-monospace,Menlo,Consolas,monospace';
+          el.textContent = 'App runtime error\n\n' + msg;
+          document.body.appendChild(el);
+        };
+        window.addEventListener('error', (e) => show(e?.error?.stack || e.message));
+        window.addEventListener('unhandledrejection', (e) => show((e.reason && (e.reason.stack||e.reason.message)) || String(e.reason)));
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="./index.tsx"></script>
   </body>
