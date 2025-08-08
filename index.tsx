@@ -886,6 +886,9 @@ const App: React.FC = () => {
 
         return (
             <>
+        {/* Refresh current prices once on initial mount of dashboard */}
+        {/* eslint-disable-next-line react-hooks/exhaustive-deps */}
+        {useEffect(() => { fetchCurrentPricesForOpenPortfolio(); }, [])}
                 {/* US Indices charts */}
                 <IndicesWidget dark={isDarkTheme} />
                 <div className="card" style={{ position: 'relative' }}>
