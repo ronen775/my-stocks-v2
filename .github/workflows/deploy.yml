@@ -26,11 +26,30 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Load combined env variables (optional)
+        run: |
+          set -e
+          if [ -n "${ENVIRONMENTS_VARIABLES}" ]; then
+            printf "%s\n" "$ENVIRONMENTS_VARIABLES" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${FIREBASE_VARIABLE}" ]; then
+            printf "%s\n" "$FIREBASE_VARIABLE" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${ENVIRONMENTS_SECRETS}" ]; then
+            printf "%s\n" "$ENVIRONMENTS_SECRETS" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+        env:
+          ENVIRONMENTS_VARIABLES: ${{ vars.ENVIRONMENTS_VARIABLES || secrets.ENVIRONMENTS_VARIABLES }}
+          FIREBASE_VARIABLE: ${{ vars.FIREBASE_VARIABLE || secrets.FIREBASE_VARIABLE }}
+          ENVIRONMENTS_SECRETS: ${{ vars.ENVIRONMENTS_SECRETS || secrets.ENVIRONMENTS_SECRETS }}
       - name: Print env source (debug)
         run: |
-          echo "Has secrets?" ${{ secrets.VITE_FIREBASE_API_KEY != '' }}
-          echo "Has vars?" ${{ vars.VITE_FIREBASE_API_KEY != '' }}
-          echo "Environment name:" ${{ job.environment.name || 'none' }}
+          echo "Has secrets?" ${{ secrets.VITE_FIREBASE_API_KEY != '' || secrets.VITE_FIREBASE_AUTH_DOMAIN != '' || secrets.VITE_FIREBASE_PROJECT_ID != '' || secrets.VITE_FIREBASE_STORAGE_BUCKET != '' || secrets.VITE_FIREBASE_MESSAGING_SENDER_ID != '' || secrets.VITE_FIREBASE_APP_ID != '' }}
+          echo "Has vars?" ${{ vars.VITE_FIREBASE_API_KEY != '' || vars.VITE_FIREBASE_AUTH_DOMAIN != '' || vars.VITE_FIREBASE_PROJECT_ID != '' || vars.VITE_FIREBASE_STORAGE_BUCKET != '' || vars.VITE_FIREBASE_MESSAGING_SENDER_ID != '' || vars.VITE_FIREBASE_APP_ID != '' }}
+          echo "Has combined (ENVIRONMENTS_VARIABLES|FIREBASE_VARIABLE|ENVIRONMENTS_SECRETS)?" ${{ (vars.ENVIRONMENTS_VARIABLES != '' || secrets.ENVIRONMENTS_VARIABLES != '' || vars.FIREBASE_VARIABLE != '' || secrets.FIREBASE_VARIABLE != '' || vars.ENVIRONMENTS_SECRETS != '' || secrets.ENVIRONMENTS_SECRETS != '') }}
+          env | grep '^VITE_FIREBASE_' || true
+        shell: bash
       - name: Verify Firebase secrets
         run: |
           set -e
