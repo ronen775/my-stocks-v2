@@ -29,14 +29,14 @@ const app = isFirebaseConfigured ? initializeApp(firebaseConfig) : undefined as 
 const auth = isFirebaseConfigured ? getAuth(app) : undefined as unknown as ReturnType<typeof getAuth>;
 const db = isFirebaseConfigured ? getFirestore(app) : undefined as unknown as ReturnType<typeof getFirestore>;
 
-// Feature flag to allow disabling Firestore usage in dev until rules are set
-export const isFirestoreEnabled: boolean = ((import.meta as any).env?.VITE_ENABLE_FIRESTORE === 'true') && isFirebaseConfigured;
+// Feature flag (defaults to enabled when Firebase is configured). Set VITE_ENABLE_FIRESTORE='false' to disable.
+export const isFirestoreEnabled: boolean = isFirebaseConfigured && ((import.meta as any).env?.VITE_ENABLE_FIRESTORE !== 'false');
 
 // Avoid logging full config or secrets in production
 
 // Optional: log if Firestore is disabled to clarify console
 if (!isFirestoreEnabled) {
-  console.warn('Firestore disabled via VITE_ENABLE_FIRESTORE=false');
+  console.warn('Firestore disabled (set VITE_ENABLE_FIRESTORE!="false" to enable)');
 }
 
 // Google Auth Provider

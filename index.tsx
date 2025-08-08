@@ -343,31 +343,84 @@ const App: React.FC = () => {
 
     const loadUserData = async (userId: string) => {
         try {
+            // Try Firestore first
             const userData = await getUserData(userId);
             if (userData) {
                 setBuyTransactions(userData.buyTransactions || []);
                 setSellTransactions(userData.sellTransactions || []);
                 setSettings(userData.settings || settings);
+                return;
             }
         } catch (error) {
             console.error('Error loading user data:', error);
+        }
+        // Fallback to local backup if Firestore unavailable or empty
+        try {
+            const localRaw = localStorage.getItem(`portfolio_backup_${userId}`);
+            if (localRaw) {
+                const localData = JSON.parse(localRaw);
+                setBuyTransactions(localData.buyTransactions || []);
+                setSellTransactions(localData.sellTransactions || []);
+                if (localData.settings) setSettings(localData.settings);
+            }
+        } catch {
+            // ignore
         }
     };
 
     const saveUserDataToFirebase = async () => {
         if (user) {
             try {
-                await saveUserData(user.uid, {
+                const payload = {
                     buyTransactions,
                     sellTransactions,
                     settings,
                     lastUpdated: new Date().toISOString()
-                });
+                };
+                await saveUserData(user.uid, payload);
+                // Also keep a local backup to ensure persistence on intermittent connectivity
+                try { localStorage.setItem(`portfolio_backup_${user.uid}`, JSON.stringify(payload)); } catch {}
             } catch (error) {
                 console.error('Error saving user data:', error);
+                // Fallback: save locally and mark for later sync
+                try {
+                    const payload = {
+                        buyTransactions,
+                        sellTransactions,
+                        settings,
+                        lastUpdated: new Date().toISOString()
+                    };
+                    localStorage.setItem(`portfolio_backup_${user.uid}`, JSON.stringify(payload));
+                    localStorage.setItem(`portfolio_needs_sync_${user.uid}`, '1');
+                } catch {}
             }
         }
     };
+
+    // Flush/save when leaving the page or when app goes to background, and retry when coming back online
+    useEffect(() => {
+        const handleBeforeUnload = () => { saveUserDataToFirebase(); };
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') {
+                saveUserDataToFirebase();
+            }
+        };
+        const handleOnline = () => {
+            if (user && localStorage.getItem(`portfolio_needs_sync_${user.uid}`) === '1') {
+                saveUserDataToFirebase().then(() => {
+                    try { localStorage.removeItem(`portfolio_needs_sync_${user.uid}`); } catch {}
+                });
+            }
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('online', handleOnline);
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('online', handleOnline);
+        };
+    }, [user, buyTransactions, sellTransactions, settings]);
 
     const handleSignIn = async () => {
         try {
