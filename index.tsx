@@ -323,6 +323,13 @@ const App: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
+    // Refresh prices when entering dashboard view
+    useEffect(() => {
+        if (view === 'dashboard') {
+            fetchCurrentPricesForOpenPortfolio();
+        }
+    }, [view, fetchCurrentPricesForOpenPortfolio]);
+
     const loadUserData = async (userId: string) => {
         try {
             const userData = await getUserData(userId);
@@ -883,14 +890,6 @@ const App: React.FC = () => {
     // --- Render Methods for Views ---
     const renderDashboard = () => {
         const filteredTransactions = dashboardFilter === 'open' ? openTransactions : closedTransactions;
-
-    // Trigger one-time price refresh when dashboard becomes active
-    useEffect(() => {
-      if (view === 'dashboard') {
-        fetchCurrentPricesForOpenPortfolio();
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [view]);
 
         return (
             <>
