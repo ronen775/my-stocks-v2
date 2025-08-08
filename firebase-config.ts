@@ -2,16 +2,20 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection } from 'firebase/firestore';
 
-// Firebase configuration
-// TODO: החלף את הפרטים הבאים עם הפרטים האמיתיים שלך מ-Firebase Console
+// Firebase configuration (read ONLY from env; no hardcoded fallbacks)
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "your-project.firebaseapp.com",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "your-project-id",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "your-project.appspot.com",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "123456789",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:123456789:web:abcdef123456"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
+
+// Basic validation to avoid empty config in production builds
+if (!firebaseConfig.apiKey || !firebaseConfig.authDomain || !firebaseConfig.projectId) {
+  console.error('Missing Firebase env configuration. Ensure VITE_* vars are set at build time.');
+}
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
@@ -21,13 +25,7 @@ const db = getFirestore(app);
 // Feature flag to allow disabling Firestore usage in dev until rules are set
 export const isFirestoreEnabled: boolean = (import.meta as any).env?.VITE_ENABLE_FIRESTORE !== 'false';
 
-// Debug: Check if Firebase is initialized correctly
-console.log('Firebase initialized successfully');
-console.log('Auth domain:', firebaseConfig.authDomain);
-console.log('Project ID:', firebaseConfig.projectId);
-console.log('API Key loaded:', !!firebaseConfig.apiKey);
-console.log('Storage Bucket:', firebaseConfig.storageBucket);
-console.log('Full config:', firebaseConfig);
+// Avoid logging full config or secrets in production
 
 // Optional: log if Firestore is disabled to clarify console
 if (!isFirestoreEnabled) {
