@@ -365,15 +365,6 @@ const App: React.FC = () => {
 
     // Refresh prices automatically after login/landing when there are open positions
     const didInitialPricesRefresh = useRef(false);
-    useEffect(() => {
-        if (view !== 'dashboard') return;
-        const hasOpen = allSummaries.some(({ summary }) => summary.remainingQuantity > 0);
-        if (hasOpen && !didInitialPricesRefresh.current) {
-            didInitialPricesRefresh.current = true;
-            // intentionally omit from deps to avoid TDZ issues
-            fetchCurrentPricesForOpenPortfolio();
-        }
-    }, [view, allSummaries]);
 
     const handleSignOut = async () => {
         try {
@@ -1877,6 +1868,15 @@ const App: React.FC = () => {
             </div>
         );
     }
+
+    // Safe post-render effect to refresh prices once when arriving to dashboard
+    useEffect(() => {
+        if (view !== 'dashboard') return;
+        if (!didInitialPricesRefresh.current) {
+            didInitialPricesRefresh.current = true;
+            fetchCurrentPricesForOpenPortfolio();
+        }
+    }, [view]);
 
     return (
         <div className="app-container">
