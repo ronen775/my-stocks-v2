@@ -59,44 +59,59 @@ const AppLogo = () => (
 // --- US Indices Widget (TradingView) side-by-side: chart left, list right ---
 const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const [selected, setSelected] = useState<{ s: string; d: string }>(
+  const [selected, setSelected] = useState<{ s: string; d: string; alt?: string }>(
     { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' }
   );
 
-  const symbols: Array<{ s: string; d: string }> = [
+  const symbols: Array<{ s: string; d: string; alt?: string }> = [
     { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
     { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
-    { s: 'FOREXCOM:US30USD', d: 'Dow Jones' },
+    { s: 'COINBASE:BTCUSD', alt: 'BINANCE:BTCUSDT', d: 'Bitcoin' },
     { s: 'AMEX:IWM', d: 'Russell 2000' }
   ];
 
   useEffect(() => {
     if (!chartRef.current) return;
-    chartRef.current.innerHTML = '';
 
-    // Structure required by TradingView embed
-    const widgetDiv = document.createElement('div');
-    widgetDiv.className = 'tradingview-widget-container__widget';
-    chartRef.current.appendChild(widgetDiv);
+    const renderWidget = (symbol: string) => {
+      if (!chartRef.current) return;
+      chartRef.current.innerHTML = '';
+      const widgetDiv = document.createElement('div');
+      widgetDiv.className = 'tradingview-widget-container__widget';
+      chartRef.current.appendChild(widgetDiv);
 
-    const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-    script.type = 'text/javascript';
-    script.async = true;
-    script.innerHTML = JSON.stringify({
-      symbol: selected.s,
-      width: '100%',
-      height: 320,
-      interval: 'D',
-      timezone: 'Etc/UTC',
-      theme: dark ? 'dark' : 'light',
-      locale: 'en',
-      hide_volume: true,
-      allow_symbol_change: false
-    });
-    chartRef.current.appendChild(script);
+      const script = document.createElement('script');
+      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js';
+      script.type = 'text/javascript';
+      script.async = true;
+      script.innerHTML = JSON.stringify({
+        symbols: [[`${symbol}|1D`]],
+        chartOnly: false,
+        width: '100%',
+        height: '320',
+        locale: 'en',
+        colorTheme: dark ? 'dark' : 'light',
+        isTransparent: false,
+        showVolume: false,
+        lineWidth: 2
+      });
+      chartRef.current.appendChild(script);
+    };
+
+    // Try primary symbol first
+    renderWidget(selected.s);
+
+    // If nothing rendered in a short time, try the fallback (for Dow Jones)
+    const timeoutId = window.setTimeout(() => {
+      if (!chartRef.current) return;
+      const hasContent = chartRef.current.querySelector('iframe, table, div > div');
+      if (!hasContent && selected.alt) {
+        renderWidget(selected.alt);
+      }
+    }, 1800);
 
     return () => {
+      window.clearTimeout(timeoutId);
       if (chartRef.current) chartRef.current.innerHTML = '';
     };
   }, [selected, dark]);
