@@ -1,3 +1,45 @@
+.dark-theme input[type="date"]::-webkit-calendar-picker-indicator,
+.dark-theme input.date-input::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(2) !important;
+  -webkit-filter: invert(1) brightness(2) !important;
+  opacity: 1 !important;
+}
+.dark-theme input[type="date"]::-webkit-calendar-picker-indicator,
+.dark-theme input.date-input::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.8) contrast(1.2);
+  opacity: 1;
+}
+
+.dark-theme input[type="date"],
+.dark-theme input.date-input {
+  color-scheme: dark;
+}
+.date-range-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+}
+.date-range-toolbar .date-range-quick {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.date-range-toolbar .date-range-fields {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+@media (max-width: 700px) {
+  .date-range-toolbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .date-range-toolbar .date-range-fields {
+    flex-wrap: wrap;
+  }
+}
 
 :root {
   /* Light Theme (Default) */
@@ -26,6 +68,7 @@
   --shadow-color-dark: rgba(0, 0, 0, 0.3);
   --success-color-dark: #34a853;
   --danger-color-dark: #ea4335;
+  --table-header-bg: #f0f4fa;
 }
 
 /* Dark theme class */
@@ -41,6 +84,7 @@
   --shadow-color: var(--shadow-color-dark);
   --success-color: var(--success-color-dark);
   --danger-color: var(--danger-color-dark);
+  --table-header-bg: #2a3441;
 }
 
 body {
@@ -265,17 +309,36 @@ body {
 
 .dashboard-filter-tabs {
     display: flex;
-    gap: 10px;
+    gap: 6px;
 }
 
 .filter-btn {
     background: var(--card-background);
     color: var(--secondary-color);
     font-weight: 700;
-    padding: 8px 16px;
-    height: auto;
+    padding: 6px 10px;
+    height: 40px;
     border: 1px solid var(--border-color);
     transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+    font-size: 0.88rem;
+    max-width: 55px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Date range toolbar one-line layout */
+.date-range-toolbar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  align-items: center;
+  overflow-x: auto;
+}
+.date-range-toolbar .range-label {
+  font-weight: 700;
+  color: var(--secondary-color);
+  margin-inline-start: 6px;
 }
 .filter-btn:hover {
     background: #e2e6ea;
@@ -314,11 +377,16 @@ body {
 }
 
 .stocks-table th {
-    background-color: var(--card-background);
+    background-color: var(--table-header-bg);
     font-weight: 700;
     text-align: right;
     color: var(--text-color);
     transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Stronger separator below the header row */
+.stocks-table thead tr th {
+    border-bottom: 2px solid var(--border-color);
 }
 
 .th-with-button {
@@ -326,6 +394,39 @@ body {
     justify-content: space-between;
     align-items: center;
     gap: 10px;
+}
+
+/* Sortable header buttons */
+.th-sort-btn {
+    appearance: none;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.th-sort-btn:hover .sort-indicator {
+    text-decoration: none;
+}
+
+.sort-indicator {
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
+/* Emphasized green refresh button */
+.refresh-btn {
+    background-color: var(--success-color) !important;
+    color: #ffffff !important;
+}
+.refresh-btn:hover {
+    background-color: #218838 !important;
 }
 
 .stocks-table tbody tr:last-child td {
@@ -419,6 +520,19 @@ input:disabled {
 
 .dark-theme input:disabled {
   background-color: #2a3441;
+}
+
+/* Make native date picker icon white in dark theme */
+.dark-theme input[type="date"]::-webkit-calendar-picker-indicator,
+.dark-theme input.date-input::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 1;
+}
+
+/* Firefox fallback (limited support) */
+.dark-theme input[type="date"],
+.dark-theme input.date-input {
+  color-scheme: dark;
 }
 
 button {
@@ -542,7 +656,7 @@ button:disabled {
 }
 
 .transactions-table th {
-    background-color: var(--card-background);
+    background-color: var(--table-header-bg);
     font-weight: 700;
     color: var(--text-color);
     transition: background-color 0.3s ease, color 0.3s ease;
@@ -1268,7 +1382,7 @@ path.pie-slice:hover {
 }
 
 .summary-row {
-  background: var(--card-background);
+  background: var(--table-header-bg);
   font-weight: bold;
   transition: background-color 0.3s ease;
 }

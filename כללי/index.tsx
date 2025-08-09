@@ -152,6 +152,8 @@ const App: React.FC = () => {
         taxRate: 0.25,
     });
     const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, content: '' });
+    const [buyHistoryFilter, setBuyHistoryFilter] = useState<'all' | 'unsold' | 'sold'>('unsold');
+    const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'stock', direction: 'asc' });
 
     const [buyTransactions, setBuyTransactions] = useState<Transaction[]>([]);
     const [sellTransactions, setSellTransactions] = useState<Transaction[]>([]);
@@ -171,6 +173,9 @@ const App: React.FC = () => {
     const [sellQuantity, setSellQuantity] = useState<string>('');
     const [isBuyFormVisible, setIsBuyFormVisible] = useState(false);
     const [isFetchingPrice, setIsFetchingPrice] = useState<boolean>(false);
+    const [dateRange, setDateRange] = useState<'all' | 'week' | 'month' | 'quarter' | 'year' | 'custom'>('all');
+    const [customStart, setCustomStart] = useState<string>('');
+    const [customEnd, setCustomEnd] = useState<string>('');
 
 
     // View-related state
@@ -191,36 +196,69 @@ const App: React.FC = () => {
     };
 
     const calculateStockSummary = (stockName: string | null): StockSummary => {
-        const initialSummary: StockSummary = { totalBuyQuantity: 0, totalSellQuantity: 0, remainingQuantity: 0, weightedAvgBuyPrice: 0, weightedAvgCostBasis: 0, totalBuyCost: 0, totalCommissions: 0, realizedGrossPnl: 0, realizedNetPnl: 0, roi: 0 };
+        const initialSummary: StockSummary = {
+            totalBuyQuantity: 0,
+            totalSellQuantity: 0,
+            remainingQuantity: 0,
+            weightedAvgBuyPrice: 0,
+            weightedAvgCostBasis: 0,
+            totalBuyCost: 0,
+            totalCommissions: 0,
+            realizedGrossPnl: 0,
+            realizedNetPnl: 0,
+            roi: 0,
+        };
         if (!stockName) return initialSummary;
 
-        const buysForStock = buyTransactions.filter(t => t.stockName === stockName);
-        const sellsForStock = sellTransactions.filter(t => t.stockName === stockName);
+        const buysForStock = buyTransactions
+            .filter(t => t.stockName === stockName)
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        const sellsForStock = sellTransactions
+            .filter(t => t.stockName === stockName)
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
         const totalBuyQuantity = buysForStock.reduce((sum, t) => sum + t.quantity, 0);
         const totalSellQuantity = sellsForStock.reduce((sum, t) => sum + t.quantity, 0);
-        const remainingQuantity = totalBuyQuantity - totalSellQuantity;
 
         const totalBuyValue = buysForStock.reduce((sum, t) => sum + (t.price * t.quantity), 0);
         const totalBuyCommissions = buysForStock.reduce((sum, t) => sum + t.commission, 0);
         const totalBuyCost = totalBuyValue + totalBuyCommissions;
         
-        const weightedAvgBuyPrice = totalBuyQuantity > 0 ? totalBuyValue / totalBuyQuantity : 0;
-        const weightedAvgCostBasis = totalBuyQuantity > 0 ? totalBuyCost / totalBuyQuantity : 0;
+        type BuyLot = { remaining: number; pricePerShare: number; costBasisPerShare: number };
+        const buyLots: BuyLot[] = buysForStock.map(buy => ({
+            remaining: buy.quantity,
+            pricePerShare: buy.price,
+            costBasisPerShare: (buy.price * buy.quantity + buy.commission) / buy.quantity,
+        }));
 
-        let realizedGrossPnl = 0;
+        let totalSellValue = 0;
         let costOfSoldShares = 0;
-        if (sellsForStock.length > 0 && weightedAvgCostBasis > 0) {
-            const totalSellValue = sellsForStock.reduce((sum, t) => sum + t.total, 0);
-            costOfSoldShares = weightedAvgCostBasis * totalSellQuantity;
-            realizedGrossPnl = totalSellValue - costOfSoldShares;
+
+        for (const sell of sellsForStock) {
+            let remainingToMatch = sell.quantity;
+            totalSellValue += sell.total;
+            for (const lot of buyLots) {
+                if (remainingToMatch <= 0) break;
+                if (lot.remaining <= 0) continue;
+                const qtyTaken = Math.min(lot.remaining, remainingToMatch);
+                costOfSoldShares += lot.costBasisPerShare * qtyTaken;
+                lot.remaining -= qtyTaken;
+                remainingToMatch -= qtyTaken;
+            }
         }
 
+        const remainingQuantity = buyLots.reduce((sum, lot) => sum + lot.remaining, 0);
+        const remainingPriceValue = buyLots.reduce((sum, lot) => sum + lot.pricePerShare * lot.remaining, 0);
+        const remainingCostBasisValue = buyLots.reduce((sum, lot) => sum + lot.costBasisPerShare * lot.remaining, 0);
+
+        const weightedAvgBuyPrice = remainingQuantity > 0 ? (remainingPriceValue / remainingQuantity) : 0;
+        const weightedAvgCostBasis = remainingQuantity > 0 ? (remainingCostBasisValue / remainingQuantity) : 0;
+
+        const realizedGrossPnl = totalSellValue - costOfSoldShares;
         const totalSellCommissions = sellsForStock.reduce((sum, t) => sum + t.commission, 0);
         const totalCommissions = totalBuyCommissions + totalSellCommissions;
         const taxOnProfit = realizedGrossPnl > 0 ? realizedGrossPnl * settings.taxRate : 0;
         const realizedNetPnl = realizedGrossPnl - taxOnProfit;
-
         const totalInvestedForSold = costOfSoldShares;
         const roi = totalInvestedForSold > 0 ? (realizedGrossPnl / totalInvestedForSold) * 100 : 0;
 
@@ -268,6 +306,20 @@ const App: React.FC = () => {
     }, [allSummaries, currentStockPrices]);
 
     // --- Event Handlers ---
+    const requestSort = (key: string) => {
+        setSortConfig(prev => {
+            if (prev.key === key) {
+                return { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+            }
+            // default to desc (גבוה לנמוך) בבחירת עמודה חדשה
+            return { key, direction: 'desc' };
+        });
+    };
+
+    const SortIndicator: React.FC<{ columnKey: string }> = ({ columnKey }) => {
+        if (sortConfig.key !== columnKey) return <span className="sort-indicator">↕</span>;
+        return <span className="sort-indicator">{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>;
+    };
     const handleSettingsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
         const isRate = name === 'commissionRate' || name === 'taxRate';
@@ -525,6 +577,37 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
             return summary.remainingQuantity === 0 && summary.totalBuyQuantity > 0;
         });
 
+        // Build display rows with computed fields for sorting
+        const rows = filteredStocks.map(({ stock, summary }) => {
+            const costOfHoldings = summary.weightedAvgCostBasis * summary.remainingQuantity;
+            const currentPrice = currentStockPrices[stock] ?? null;
+            const unrealizedPnlForStock = currentPrice ? (currentPrice * summary.remainingQuantity) - costOfHoldings : null;
+            return {
+                stock,
+                summary,
+                costOfHoldings,
+                currentPrice,
+                unrealizedPnlForStock,
+                realizedNetPnl: summary.realizedNetPnl,
+                avgBuyPrice: summary.weightedAvgBuyPrice,
+                remainingQuantity: summary.remainingQuantity,
+            };
+        });
+
+        const sortedRows = [...rows].sort((a, b) => {
+            const { key, direction } = sortConfig;
+            const dir = direction === 'asc' ? 1 : -1;
+            const av: any = (a as any)[key];
+            const bv: any = (b as any)[key];
+            if (av == null && bv == null) return 0;
+            if (av == null) return 1;
+            if (bv == null) return -1;
+            if (typeof av === 'string' || typeof bv === 'string') {
+                return String(av).localeCompare(String(bv)) * dir;
+            }
+            return (av - bv) * dir;
+        });
+
         return (
             <>
                 <div className="card">
@@ -565,7 +648,7 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                              <div className={`value ${pnlClass(unrealizedPnl)} value-with-action`}>
                                 <span className="financial-number">{Object.keys(currentStockPrices).length > 0 || (allSummaries.every(s => s.summary.remainingQuantity === 0)) ? formatCurrency(unrealizedPnl) : '---'}</span>
                                 <button
-                                    className="icon-btn-sm"
+                                    className="icon-btn-sm refresh-btn"
                                     aria-label="Refresh prices"
                                     title="רענן מחירים"
                                     onClick={fetchCurrentPricesForOpenPortfolio}
@@ -593,17 +676,39 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                         <table className="stocks-table">
                             <thead>
                                 <tr>
-                                    <th>שם המניה</th>
-                                    <th>כמות נוכחית</th>
-                                    <th>מחיר ממוצע</th>
-                                    <th>עלות החזקה</th>
+                                        <th>
+                                            <button type="button" className="th-sort-btn" onClick={() => requestSort('stock')}>
+                                                <span>שם המניה</span> <SortIndicator columnKey="stock" />
+                                            </button>
+                                        </th>
+                                        <th>
+                                            <button type="button" className="th-sort-btn" onClick={() => requestSort('remainingQuantity')}>
+                                                <span>כמות נוכחית</span> <SortIndicator columnKey="remainingQuantity" />
+                                            </button>
+                                        </th>
+                                        <th>
+                                            <button type="button" className="th-sort-btn" onClick={() => requestSort('avgBuyPrice')}>
+                                                <span>מחיר ממוצע</span> <SortIndicator columnKey="avgBuyPrice" />
+                                            </button>
+                                        </th>
+                                        <th>
+                                            <button type="button" className="th-sort-btn" onClick={() => requestSort('costOfHoldings')}>
+                                                <span>עלות החזקה</span> <SortIndicator columnKey="costOfHoldings" />
+                                            </button>
+                                        </th>
                                     {dashboardFilter === 'open' ? (
                                         <>
-                                            <th>מחיר נוכחי</th>
+                                                <th>
+                                                    <button type="button" className="th-sort-btn" onClick={() => requestSort('currentPrice')}>
+                                                        <span>מחיר נוכחי</span> <SortIndicator columnKey="currentPrice" />
+                                                    </button>
+                                                </th>
                                             <th className="th-with-button">
-                                                <span>רווח/הפסד לא ממומש</span>
+                                                    <button type="button" className="th-sort-btn" onClick={() => requestSort('unrealizedPnlForStock')}>
+                                                        <span>רווח/הפסד לא ממומש</span> <SortIndicator columnKey="unrealizedPnlForStock" />
+                                                    </button>
                                                 <button
-                                                    className="icon-btn-sm"
+                                                        className="icon-btn-sm refresh-btn"
                                                     aria-label="רענן מחירים"
                                                     title="רענן מחירים"
                                                     onClick={fetchCurrentPricesForOpenPortfolio}
@@ -614,15 +719,17 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                                             </th>
                                         </>
                                     ) : (
-                                        <th>רווח/הפסד ממומש (נטו)</th>
+                                            <th>
+                                                <button type="button" className="th-sort-btn" onClick={() => requestSort('realizedNetPnl')}>
+                                                    <span>רווח/הפסד ממומש (נטו)</span> <SortIndicator columnKey="realizedNetPnl" />
+                                                </button>
+                                            </th>
                                     )}
                                 </tr>
                             </thead>
                             <tbody>
-                                {filteredStocks.length > 0 ? (
-                                    filteredStocks.map(({ stock, summary }) => {
-                                        const costOfHoldings = summary.weightedAvgCostBasis * summary.remainingQuantity;
-                                        return (
+                                {sortedRows.length > 0 ? (
+                                    sortedRows.map(({ stock, summary, costOfHoldings, currentPrice, unrealizedPnlForStock }) => (
                                             <tr key={stock} className="stock-table-row" onClick={() => goToStockDetail(stock)}>
                                                 <td>{stock}</td>
                                                 <td>{summary.remainingQuantity}</td>
@@ -632,20 +739,14 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                                                     <>
                                                         <td>
                                                             <span className="financial-number">
-                                                                {currentStockPrices[stock] ? formatCurrency(currentStockPrices[stock]) : '---'}
+                                                            {currentPrice ? formatCurrency(currentPrice) : '---'}
                                                             </span>
                                                         </td>
-                                                        {(() => {
-                                                            const currentPrice = currentStockPrices[stock];
-                                                            const unrealizedPnlForStock = currentPrice ? (currentPrice * summary.remainingQuantity) - costOfHoldings : null;
-                                                            return (
                                                                 <td className={unrealizedPnlForStock !== null ? pnlClass(unrealizedPnlForStock) : ''}>
                                                                     <span className="financial-number">
                                                                         {unrealizedPnlForStock !== null ? formatCurrency(unrealizedPnlForStock) : '---'}
                                                                     </span>
                                                                 </td>
-                                                            );
-                                                        })()}
                                                     </>
                                                 ) : (
                                                     <td className={pnlClass(summary.realizedNetPnl)}>
@@ -653,8 +754,7 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                                                     </td>
                                                 )}
                                             </tr>
-                                        );
-                                    })
+                                    ))
                                  ) : (
                                     <tr>
                                         <td colSpan={dashboardFilter === 'open' ? 6 : 5}>
@@ -675,20 +775,24 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
         );
     };
     
-    const renderBuyMoreForm = () => (
-        <div className="buy-more-section">
-            <h3>{editingId ? `עריכת קנייה עבור ${activeStock}` : `קנייה נוספת עבור ${activeStock}`}</h3>
-             <div className="form-grid buy-form">
-                 <div className="form-group"><label>מחיר מניה ($)</label><input type="number" value={buyPrice} onChange={e => setBuyPrice(e.target.value)} /></div>
-                 <div className="form-group"><label>כמות מניות</label><input type="number" value={buyQuantity} onChange={e => setBuyQuantity(e.target.value)} /></div>
-                 <div className="form-group"><label>תאריך</label><input type="date" value={buyDate} onChange={e => setBuyDate(e.target.value)} /></div>
-                 <div className="form-actions">
-                     <button onClick={handleSaveBuy} disabled={!buyPrice || !buyQuantity || !buyDate}>{editingId ? 'עדכן' : <><PlusIcon/>הוסף</>}</button>
-                     <button className="secondary" onClick={resetBuyForm}>בטל</button>
+    const renderBuyMoreForm = () => {
+        const stockCurrentPrice = activeStock ? currentStockPrices[activeStock] : undefined;
+        return (
+        <div className="form-grid">
+            <div className="form-group">
+                <label htmlFor="buy-price">מחיר מניה ($)</label>
+                <div className="input-with-icon">
+                    <input id="buy-price" type="number" value={buyPrice} onChange={e => setBuyPrice(e.target.value)} placeholder={stockCurrentPrice ? `מחיר נוכחי: ${stockCurrentPrice.toFixed(2)}` : undefined} />
+                    <button type="button" className="icon-btn" title="רענן מחיר" onClick={async () => { if (activeStock) { await fetchStockPrice(activeStock); await fetchCurrentPricesForOpenPortfolio(); } }} disabled={isFetchingPrice}>
+                        <RefreshIcon />
+                    </button>
                  </div>
              </div>
+            <div className="form-group"><label htmlFor="buy-quantity">כמות מניות</label><input id="buy-quantity" type="number" value={buyQuantity} onChange={e => setBuyQuantity(e.target.value)} /></div>
+            <div className="form-group"><label htmlFor="buy-date">תאריך</label><input id="buy-date" className="date-input" type="date" value={buyDate} onChange={e => setBuyDate(e.target.value)} /></div>
+            <button onClick={handleSaveBuy} disabled={!buyPrice || !buyQuantity || !buyDate}><PlusIcon/> הוסף קנייה</button>
         </div>
-    );
+    ); };
 
     const renderStockDetail = () => {
         const buysForActiveStock = activeStock ? buyTransactions.filter(t => t.stockName === activeStock) : [];
@@ -715,7 +819,7 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                 </div>
 
                 <div className="card">
-                    <h2>ביצוע מכירה</h2>
+                    <h2>היסטוריית מכירות</h2>
                     <div className="form-grid">
                         <div className="form-group"><label htmlFor="sell-price">מחיר מניה ($)</label><input id="sell-price" type="number" placeholder={`מחיר קנייה ממוצע: ${activeStockSummary.weightedAvgBuyPrice.toFixed(2)}`} value={sellPrice} onChange={e => setSellPrice(e.target.value)} /></div>
                         <div className="form-group">
@@ -730,7 +834,7 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                         <button onClick={handleAddSell} disabled={!sellPrice || !sellQuantity || activeStockSummary.remainingQuantity <= 0 || parseInt(sellQuantity, 10) > activeStockSummary.remainingQuantity}><PlusIcon/> הוסף מכירה</button>
                     </div>
                     {sellsForActiveStock.length > 0 && <div className="transactions-list">
-                        <h3>היסטוריית מכירות</h3>
+                        <h3>עסקאות מכירה</h3>
                         <table className="transactions-table">
                             <thead><tr><th>תאריך</th><th>מחיר</th><th>כמות</th><th>עמלה</th><th>סה"כ</th><th>פעולות</th></tr></thead>
                             <tbody>
@@ -744,25 +848,92 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                                         <button className="delete-btn" title="מחק" onClick={() => handleDeleteSell(t.id)}><DeleteIcon /></button>
                                     </td>
                                 </tr>)}
+                                 {sellsForActiveStock.length > 0 && (
+                                     <tr className="summary-row">
+                                         <td>סיכום</td>
+                                         <td></td>
+                                         <td>{sellsForActiveStock.reduce((s,t)=> s + t.quantity, 0)}</td>
+                                         <td><span className="financial-number">{formatCurrency(sellsForActiveStock.reduce((s,t)=> s + t.commission, 0))}</span></td>
+                                         <td><span className="financial-number">{formatCurrency(sellsForActiveStock.reduce((s,t)=> s + (t.total - t.commission), 0))}</span></td>
+                                         <td></td>
+                                     </tr>
+                                 )}
                             </tbody>
                         </table>
                     </div>}
                 </div>
                 
                 <div className="card">
-                     <div className="card-header-with-action">
+                     <div className="card-header-with-action" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'10px',flexWrap:'wrap'}}>
                         <h2>היסטוריית קניות</h2>
-                        {!isBuyFormVisible && <button onClick={() => setIsBuyFormVisible(true)}><PlusIcon/> קנה עוד</button>}
+                        <div className="dashboard-filter-tabs">
+                            <button className={`filter-btn ${buyHistoryFilter === 'all' ? 'active' : ''}`} onClick={() => setBuyHistoryFilter('all')}>הכול</button>
+                            <button className={`filter-btn ${buyHistoryFilter === 'unsold' ? 'active' : ''}`} onClick={() => setBuyHistoryFilter('unsold')}>יתרה</button>
+                            <button className={`filter-btn ${buyHistoryFilter === 'sold' ? 'active' : ''}`} onClick={() => setBuyHistoryFilter('sold')}>נמכר</button>
+                        </div>
+                        <div className="dashboard-filter-tabs">
+                            <button className={`filter-btn ${dateRange === 'week' ? 'active' : ''}`} onClick={() => setDateRange('week')}>שבוע</button>
+                            <button className={`filter-btn ${dateRange === 'month' ? 'active' : ''}`} onClick={() => setDateRange('month')}>חודש</button>
+                            <button className={`filter-btn ${dateRange === 'quarter' ? 'active' : ''}`} onClick={() => setDateRange('quarter')}>רבעון</button>
+                            <button className={`filter-btn ${dateRange === 'year' ? 'active' : ''}`} onClick={() => setDateRange('year')}>שנה</button>
+                            <button className={`filter-btn ${dateRange === 'all' ? 'active' : ''}`} onClick={() => setDateRange('all')}>הכול</button>
+                            <div className="form-group" style={{display:'inline-flex',alignItems:'center',gap:'6px'}}>
+                                <label htmlFor="custom-start">מ־</label>
+                                <input id="custom-start" type="date" className="date-input" value={customStart} onChange={e=>{ setCustomStart(e.target.value); setDateRange('custom'); }} />
+                                <label htmlFor="custom-end">עד</label>
+                                <input id="custom-end" type="date" className="date-input" value={customEnd} onChange={e=>{ setCustomEnd(e.target.value); setDateRange('custom'); }} />
+                            </div>
+                        </div>
                      </div>
 
-                     {isBuyFormVisible && renderBuyMoreForm()}
+                     {renderBuyMoreForm()}
                      
                      {buysForActiveStock.length > 0 && (
                         <div className="transactions-list">
                             <table className="transactions-table">
                                 <thead><tr><th>תאריך</th><th>מחיר</th><th>כמות</th><th>עמלה</th><th>סה"כ</th><th>פעולות</th></tr></thead>
                                 <tbody>
-                                    {buysForActiveStock.map(t => <tr key={t.id}>
+                                     {(() => {
+                                        // Compute remaining by FIFO for filtering in this simplified page
+                                        const lotMap: Record<number, number> = {};
+                                        for (const b of buysForActiveStock) lotMap[b.id] = b.quantity;
+                                        const sells = sellsForActiveStock.slice().sort((a,b)=> new Date(a.date).getTime()-new Date(b.date).getTime());
+                                        const buysSortedLocal = buysForActiveStock.slice().sort((a,b)=> new Date(a.date).getTime()-new Date(b.date).getTime());
+                                        for (const s of sells) {
+                                            let q = s.quantity;
+                                            for (const b of buysSortedLocal) {
+                                                if (q<=0) break;
+                                                const take = Math.min(lotMap[b.id], q);
+                                                lotMap[b.id] -= take;
+                                                q -= take;
+                                            }
+                                        }
+                                        const rows = buysForActiveStock
+                                        .filter(t => {
+                                            const remaining = lotMap[t.id] ?? t.quantity;
+                                            if (buyHistoryFilter === 'unsold') return remaining > 0;
+                                            if (buyHistoryFilter === 'sold') return remaining === 0;
+                                            return true;
+                                        })
+                                            .filter(t => {
+                                                if (dateRange === 'all') return true;
+                                                const d = new Date(t.date);
+                                                const now = new Date();
+                                                const start = new Date(now);
+                                                if (dateRange === 'week') start.setDate(now.getDate() - 7);
+                                                if (dateRange === 'month') start.setMonth(now.getMonth() - 1);
+                                                if (dateRange === 'quarter') start.setMonth(now.getMonth() - 3);
+                                                if (dateRange === 'year') start.setFullYear(now.getFullYear() - 1);
+                                                if (dateRange === 'custom') {
+                                                    if (!customStart && !customEnd) return true;
+                                                    const s = customStart ? new Date(customStart) : new Date('1970-01-01');
+                                                    const e = customEnd ? new Date(customEnd) : now;
+                                                    return d >= s && d <= e;
+                                                }
+                                                return d >= start && d <= now;
+                                            })
+                                        .map(t => (
+                                        <tr key={t.id}>
                                         <td>{formatDate(t.date)}</td>
                                         <td><span className="financial-number">{formatCurrency(t.price)}</span></td>
                                         <td>{t.quantity}</td>
@@ -772,7 +943,20 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                                             <button className="edit-btn" title="ערוך" onClick={() => handleStartEdit(t)}><EditIcon /></button>
                                             <button className="delete-btn" title="מחק" onClick={() => handleDeleteBuy(t.id)}><DeleteIcon /></button>
                                         </td>
-                                    </tr>)}
+                                     </tr>
+                                     ));
+                                        return [
+                                            ...rows,
+                                            (<tr key="summary" className="summary-row">
+                                                <td>סיכום</td>
+                                                <td></td>
+                                                <td>{buysForActiveStock.reduce((s,t)=> s + t.quantity, 0)}</td>
+                                                <td><span className="financial-number">{formatCurrency(buysForActiveStock.reduce((s,t)=> s + t.commission, 0))}</span></td>
+                                                <td><span className="financial-number">{formatCurrency(buysForActiveStock.reduce((s,t)=> s + (t.total + t.commission), 0))}</span></td>
+                                                <td className="actions-cell"></td>
+                                            </tr>)
+                                        ];
+                                     })()}
                                 </tbody>
                             </table>
                         </div>

@@ -11,6 +11,7 @@
   --success-color: #28a745;
   --danger-color: #dc3545;
   --font-family: 'Heebo', sans-serif;
+  --table-header-bg: #f0f2f5;
 }
 
 body {
@@ -167,9 +168,14 @@ body {
 }
 
 .stocks-table th {
-    background-color: var(--background-color);
+    background-color: var(--table-header-bg);
     font-weight: 700;
     text-align: right;
+}
+
+/* Stronger separator below the header row */
+.stocks-table thead tr th {
+    border-bottom: 2px solid var(--border-color);
 }
 
 .th-with-button {
@@ -177,6 +183,39 @@ body {
     justify-content: space-between;
     align-items: center;
     gap: 10px;
+}
+
+/* Sortable header buttons */
+.th-sort-btn {
+    appearance: none;
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.th-sort-btn:hover .sort-indicator {
+    text-decoration: none;
+}
+
+.sort-indicator {
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
+/* Emphasized green refresh button */
+.refresh-btn {
+    background-color: var(--success-color) !important;
+    color: #ffffff !important;
+}
+.refresh-btn:hover {
+    background-color: #218838 !important;
 }
 
 .stocks-table tbody tr:last-child td {
@@ -254,6 +293,14 @@ input:focus {
 input:disabled {
   background-color: #e9ecef;
   cursor: not-allowed;
+}
+
+/* Make native date picker icon white in dark theme */
+.dark-theme input[type="date"]::-webkit-calendar-picker-indicator,
+.dark-theme input.date-input::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(2) !important;
+  -webkit-filter: invert(1) brightness(2) !important;
+  opacity: 1 !important;
 }
 
 
@@ -354,7 +401,7 @@ button:disabled {
 }
 
 .transactions-table th {
-    background-color: var(--background-color);
+    background-color: var(--table-header-bg);
     font-weight: 700;
 }
 
@@ -391,6 +438,15 @@ button:disabled {
 
 .actions-cell button.delete-btn {
     color: var(--danger-color);
+}
+
+/* Summary row styling */
+.summary-row {
+    background: var(--table-header-bg);
+    font-weight: 700;
+}
+.summary-row td {
+    border-top: 2px solid var(--border-color);
 }
 
 .autocomplete-container {
