@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
-import { GoogleGenAI, Type } from "@google/genai";
 import { stockList as initialStockList } from './stockList';
 
 // --- Icon Components ---
@@ -185,7 +184,7 @@ const App: React.FC = () => {
     const [suggestions, setSuggestions] = useState<string[]>([]);
     
     // AI Client
-    const ai = useMemo(() => new GoogleGenAI({ apiKey: process.env.API_KEY }), []);
+    
 
     const allTimeStocks = [...new Set([...buyTransactions.map(t => t.stockName), ...sellTransactions.map(t => t.stockName)])].sort();
 
@@ -406,16 +405,12 @@ Respond ONLY with the numerical price in USD.
 Do not add any symbols, text, or explanations.
 Example for a stock trading at $123.45: 123.45`;
 
-            const response = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: prompt,
-                config: {
-                    tools: [{ googleSearch: {} }],
-                },
-            });
-
-            const priceText = response.text.replace(/[^0-9.]/g, '');
-            const price = parseFloat(priceText);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const resp = await fetch(`https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${stockSymbol}?interval=1d&range=1d`, { signal: controller.signal });
+            const json = await resp.json();
+            clearTimeout(timeoutId);
+            const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice;
             if (!isNaN(price) && price > 0) {
                 setBuyPrice(String(price));
             } else {
@@ -427,7 +422,7 @@ Example for a stock trading at $123.45: 123.45`;
         } finally {
             setIsFetchingPrice(false);
         }
-    }, [ai]);
+    }, []);
 
     const fetchCurrentPricesForOpenPortfolio = useCallback(async () => {
         const openStocks = allSummaries
@@ -449,43 +444,22 @@ Critically, ignore pre-market, after-hours, and historical data.
 Do not include any text or markdown formatting outside the JSON object.
 Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
 
-            const response = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: prompt,
-                config: {
-                    tools: [{ googleSearch: {} }],
-                },
-            });
-
-            let jsonString = response.text;
-            const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) {
-                throw new Error("API response did not contain a valid JSON object.");
+            const results: Record<string, number> = {};
+            for (const sym of openStocks) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 8000);
+                    const resp = await fetch(`https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=1d`, { signal: controller.signal });
+                    const json = await resp.json();
+                    clearTimeout(timeoutId);
+                    const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice;
+                    if (typeof price === 'number' && price > 0) results[sym] = price;
+                } catch {}
             }
-            jsonString = jsonMatch[0];
-
-            const priceData = JSON.parse(jsonString);
-
-            if (typeof priceData === 'object' && priceData !== null) {
-                 const validPrices = Object.entries(priceData).reduce((acc, [symbol, price]) => {
-                    const upperSymbol = symbol.toUpperCase();
-                    if (openStocks.includes(upperSymbol) && typeof price === 'number' && price > 0) {
-                        acc[upperSymbol] = price;
-                    }
-                    return acc;
-                }, {} as Record<string, number>);
-
-                if (Object.keys(validPrices).length < openStocks.length) {
-                    console.warn("Could not retrieve prices for all requested stocks.");
-                }
-
-                setCurrentStockPrices(prevPrices => ({
-                    ...prevPrices,
-                    ...validPrices,
-                }));
-            } else {
-                throw new Error("API response was not a valid JSON object.");
-            }
+            setCurrentStockPrices(prevPrices => ({
+                ...prevPrices,
+                ...results,
+            }));
 
         } catch (error) {
             console.error("An unexpected error occurred while fetching portfolio prices:", error);
@@ -493,7 +467,7 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
         } finally {
             setIsFetchingCurrentPrices(false);
         }
-    }, [ai, allSummaries]);
+    }, [allSummaries]);
 
     const handleStockNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const value = e.target.value.toUpperCase();
@@ -523,22 +497,7 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
     const handleUpdateStockList = async () => {
         setIsUpdatingStocks(true);
         try {
-            const response = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: "Provide an updated list of stock symbols from the S&P 500 and Nasdaq 100 indexes. Combine them into a single list, remove duplicates, and sort them alphabetically. Respond with only a JSON array of strings, for example: [\"A\", \"AAPL\", \"GOOG\"]",
-                config: {
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: Type.ARRAY,
-                        description: "A list of stock ticker symbols.",
-                        items: {
-                            type: Type.STRING,
-                            description: "A single stock ticker symbol."
-                        }
-                    },
-                }
-            });
-            const newList = JSON.parse(response.text);
+            const newList = initialStockList;
             if (Array.isArray(newList) && newList.every(item => typeof item === 'string')) {
                 const uniqueSortedList = [...new Set(newList)].sort();
                 setStockOptions(uniqueSortedList);

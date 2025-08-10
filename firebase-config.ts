@@ -64,7 +64,7 @@ try {
     });
   }
 } catch (err) {
-  console.warn('App Check init skipped:', err);
+  // silent in production
 }
 
 // Auth functions
@@ -86,9 +86,7 @@ export const signInWithGoogle = async () => {
 export const signOutUser = async () => {
   try {
     if (!isFirebaseConfigured) return;
-    console.log('Firebase signOut called');
     await signOut(auth);
-    console.log('Firebase signOut successful');
   } catch (error) {
     console.error('Error signing out:', error);
     throw error;
@@ -102,21 +100,10 @@ export const getCurrentUser = (): User | null => {
 // Firestore functions for user data
 export const saveUserData = async (userId: string, data: any) => {
   try {
-    if (!isFirestoreEnabled) {
-      console.warn('saveUserData skipped: Firestore disabled');
-      return;
-    }
-    console.log('Attempting to save user data for:', userId);
-    console.log('Data to save:', data);
+    if (!isFirestoreEnabled) return;
     await setDoc(doc(db!, 'users', userId), data, { merge: true });
-    console.log('User data saved successfully');
   } catch (error) {
     console.error('Error saving user data:', error);
-    console.error('Error details:', {
-      code: error.code,
-      message: error.message,
-      stack: error.stack
-    });
     throw error;
   }
 };

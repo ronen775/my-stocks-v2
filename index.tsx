@@ -943,27 +943,27 @@ const App: React.FC = () => {
             // Fallback: Yahoo Finance API with CORS proxy
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
-            console.log('Fetching price for:', stockSymbol);
+            
             const response = await fetch(
                 `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${stockSymbol}?interval=1d&range=1d`,
                 { signal: controller.signal }
             );
-            console.log('Response status:', response.status);
+            
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
             const data = await response.json();
             clearTimeout(timeoutId);
-            console.log('API response:', data);
+            
             const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
             if (price && price > 0) {
-                console.log('Price found:', price);
+                
                 priceCache.current[stockSymbol] = { price, timestamp: Date.now() };
                 setBuyPrice(String(price));
                 setIsFetchingPrice(false);
                 return;
             } else {
-                console.log('No valid price found in response');
+                
             }
             // Fallback to our callable function aggregator (if enabled)
             const res = await fetchQuotesViaFunction([stockSymbol]);
@@ -2778,9 +2778,7 @@ const App: React.FC = () => {
                     <span className="user-name">{user.displayName || user.email}</span>
                     <button 
                         onClick={(e) => {
-                            console.log('Sign out button clicked!');
-                            console.log('Event type:', e.type);
-                            console.log('Event target:', e.target);
+                            
                             e.preventDefault();
                             e.stopPropagation();
                             handleSignOut();

@@ -95,13 +95,13 @@ export default {
     const cached = await cache.match(cacheKey);
     if (cached) return new Response(cached.body, cached);
 
-    try {
+     try {
       const list = await fetchAllSymbols();
       const res = new Response(JSON.stringify(list), { status: 200, headers: cors() });
       // Cache at edge for 24h
       ctx.waitUntil(cache.put(cacheKey, new Response(res.clone().body, res)));
       return res;
-    } catch (e: any) {
+     } catch (e: any) {
       return new Response(JSON.stringify({ error: e?.message || 'fetch failed' }), { status: 502, headers: cors() });
     }
   }
