@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidTransaction() {
+      return
+        (request.resource.data.id is int || request.resource.data.id is number) &&
+        request.resource.data.stockName is string &&
+        request.resource.data.price is number && request.resource.data.price > 0 &&
+        request.resource.data.quantity is int && request.resource.data.quantity > 0 &&
+        request.resource.data.total is number && request.resource.data.total >= 0 &&
+        request.resource.data.commission is number && request.resource.data.commission >= 0 &&
+        request.resource.data.date is string && request.resource.data.date.size() == 10;
+    }
+
+    // User profile/settings document
+    match /users/{userId} {
+      allow read, create, update, delete: if isOwner(userId);
+    }
+
+    // Buy transactions subcollection with validation
+    match /users/{userId}/buyTransactions/{txId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidTransaction();
+      allow delete: if isOwner(userId);
+    }
+
+    // Sell transactions subcollection with validation
+    match /users/{userId}/sellTransactions/{txId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidTransaction();
+      allow delete: if isOwner(userId);
+    }
+
+    // Subcollections like transactions, portfolios, analytics etc.
+    match /users/{userId}/{subcollection=**}/{docId} {
+      allow read, create, update, delete: if isOwner(userId);
+    }
+
+    // Sharing rules removed
+  }
+}
+
+

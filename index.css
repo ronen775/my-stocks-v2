@@ -1,3 +1,45 @@
+/* Offline banner */
+.offline-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  background: #fffbeb;
+  color: #92400e;
+  border-bottom: 1px solid #f59e0b;
+  padding: 6px 10px;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* Modal styles */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+.modal-card {
+  background: var(--card-background);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  width: min(480px, calc(100% - 24px));
+  padding: 16px;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.2);
+}
+.modal-title { margin: 0 0 8px; }
+.modal-body { margin: 8px 0 16px; line-height: 1.5; }
+.modal-input { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.modal-input input { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-background); color: var(--text-color); }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal-btn { border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+.modal-btn.primary { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
+.modal-btn.danger { background: #ef4444; color: #fff; border-color: #ef4444; }
+.modal-select-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.modal-select-item { display: flex; align-items: center; gap: 8px; }
 .dark-theme input[type="date"]::-webkit-calendar-picker-indicator,
 .dark-theme input.date-input::-webkit-calendar-picker-indicator {
   filter: invert(1) brightness(2) !important;
@@ -205,6 +247,7 @@ body {
   color: var(--primary-color);
   margin: 0;
 }
+.view-only-badge { color: #b91c1c; font-weight: 700; margin-inline-start: 8px; }
 
 .card {
   background-color: var(--card-background);
@@ -316,15 +359,11 @@ body {
     background: var(--card-background);
     color: var(--secondary-color);
     font-weight: 700;
-    padding: 6px 10px;
-    height: 40px;
+    padding: 8px 16px;
+    height: auto;
     border: 1px solid var(--border-color);
     transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
-    font-size: 0.88rem;
-    max-width: 55px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 1rem;
 }
 
 /* Date range toolbar one-line layout */
@@ -334,6 +373,15 @@ body {
   flex-wrap: nowrap;
   align-items: center;
   overflow-x: auto;
+}
+.date-range-toolbar .filter-btn {
+    padding: 6px 10px;
+    height: 40px;
+    max-width: 55px;
+    font-size: 0.88rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .date-range-toolbar .range-label {
   font-weight: 700;

@@ -1,6 +1,8 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection } from 'firebase/firestore';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, setDoc, getDoc } from 'firebase/firestore';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 
 // Firebase configuration (read ONLY from env; no hardcoded fallbacks)
 const firebaseConfig = {
@@ -27,7 +29,17 @@ const isFirebaseConfigured: boolean = Boolean(
 // Initialize Firebase only when configured
 const app = isFirebaseConfigured ? initializeApp(firebaseConfig) : undefined as unknown as ReturnType<typeof initializeApp>;
 const auth = isFirebaseConfigured ? getAuth(app) : undefined as unknown as ReturnType<typeof getAuth>;
-const db = isFirebaseConfigured ? getFirestore(app) : undefined as unknown as ReturnType<typeof getFirestore>;
+const db = isFirebaseConfigured
+  ? initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    })
+  : undefined as unknown as ReturnType<typeof initializeFirestore>;
+
+// Feature flag to enable cloud quote fetching (defaults to disabled)
+const enableCloudQuotes: boolean = Boolean((import.meta as any).env?.VITE_ENABLE_CLOUD_QUOTES === 'true');
+
+// Cloud Functions (us-central1 by default) - only when enabled
+const functions = (isFirebaseConfigured && enableCloudQuotes) ? getFunctions(app, 'us-central1') : undefined as unknown as ReturnType<typeof getFunctions>;
 
 // Feature flag (defaults to enabled when Firebase is configured). Set VITE_ENABLE_FIRESTORE='false' to disable.
 export const isFirestoreEnabled: boolean = isFirebaseConfigured && ((import.meta as any).env?.VITE_ENABLE_FIRESTORE !== 'false');
@@ -41,6 +53,19 @@ if (!isFirestoreEnabled) {
 
 // Google Auth Provider
 const googleProvider = isFirebaseConfigured ? new GoogleAuthProvider() : undefined;
+
+// App Check (optional, enabled when site key is provided)
+try {
+  const siteKey = (import.meta as any).env?.VITE_APPCHECK_SITE_KEY;
+  if (isFirebaseConfigured && siteKey && typeof window !== 'undefined') {
+    initializeAppCheck(app, {
+      provider: new ReCaptchaV3Provider(siteKey),
+      isTokenAutoRefreshEnabled: true,
+    });
+  }
+} catch (err) {
+  console.warn('App Check init skipped:', err);
+}
 
 // Auth functions
 export const signInWithGoogle = async () => {
@@ -126,3 +151,15 @@ export const onAuthStateChange = (callback: (user: User | null) => void) => {
 };
 
 export { auth, db };
+
+// Quote fetcher via callable Cloud Function (with App Check)
+export const fetchQuotesViaFunction = async (symbols: string[]): Promise<Record<string, number>> => {
+  if (!isFirebaseConfigured || !enableCloudQuotes || !functions) return {};
+  try {
+    const getQuote = httpsCallable(functions as any, 'getQuote');
+    const resp = await getQuote({ symbols });
+    return (resp.data as any) || {};
+  } catch {
+    return {};
+  }
+};

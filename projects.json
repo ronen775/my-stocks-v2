@@ -1,0 +1,4 @@
+{
+  "status": "error",
+  "error": "Failed to list Firebase projects. See firebase-debug.log for more info."
+}

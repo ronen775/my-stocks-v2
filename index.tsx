@@ -1,9 +1,15 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
-import { signInWithGoogle, signOutUser, getCurrentUser, saveUserData, getUserData, onAuthStateChange } from './firebase-config';
+import { signInWithGoogle, signOutUser, getCurrentUser, saveUserData, getUserData, onAuthStateChange, fetchQuotesViaFunction } from './firebase-config';
+import { Modal } from './components/Modal';
+import { listenTransactions, upsertTransaction, deleteTransaction, hasAnyTransactions } from './data/transactions';
+// Sharing features removed for now
+import { listenPortfolios, createPortfolio, renamePortfolio, deletePortfolio } from './data/portfolios';
+import { stockList as STOCK_LIST_BUNDLED } from './כללי/stockList';
+import { initSymbolsList } from './symbols-updater';
 
-const FMP_API_KEY = "PhCBdZp7W35LO6fdsBBk2nFUOZNRuM6z";
+// Removed FMP API usage on client to avoid exposing secrets
 
 // --- Icon Components ---
 const PlusIcon = () => (
@@ -251,6 +257,44 @@ const PIE_CHART_COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#AF19FF',
 
 
 // --- Chart Components ---
+const LineChart: React.FC<{ data: Array<{ x: number; y: number }>; width?: number; height?: number; stroke?: string }>
+  = ({ data, width = 600, height = 220, stroke = 'var(--primary-color)' }) => {
+    if (!data || data.length === 0) {
+      return <div className="chart-placeholder">אין נתונים להצגה</div>;
+    }
+    const minX = Math.min(...data.map(d => d.x));
+    const maxX = Math.max(...data.map(d => d.x));
+    const minY = Math.min(...data.map(d => d.y));
+    const maxY = Math.max(...data.map(d => d.y));
+    const pad = 8;
+    const mapX = (x: number) => pad + ((x - minX) / Math.max(1, (maxX - minX))) * (width - pad * 2);
+    const mapY = (y: number) => height - pad - ((y - minY) / Math.max(1, (maxY - minY))) * (height - pad * 2);
+    const path = data
+      .sort((a, b) => a.x - b.x)
+      .map((d, i) => `${i === 0 ? 'M' : 'L'} ${mapX(d.x)} ${mapY(d.y)}`)
+      .join(' ');
+    return (
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height}>
+        <path d={path} fill="none" stroke={stroke} strokeWidth="2" />
+      </svg>
+    );
+};
+
+// --- External Quotes Endpoint (Cloudflare Worker) helper ---
+const QUOTES_ENDPOINT: string | undefined = (import.meta as any).env?.VITE_QUOTES_ENDPOINT;
+
+const fetchFromQuotesEndpoint = async (symbols: string[]): Promise<Record<string, number>> => {
+    try {
+        if (!QUOTES_ENDPOINT || !symbols?.length) return {};
+        const url = `${QUOTES_ENDPOINT}?symbols=${encodeURIComponent(symbols.join(','))}`;
+        const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) return {};
+        const data = await res.json();
+        return (data && typeof data === 'object') ? data : {};
+    } catch {
+        return {};
+    }
+};
 const PieChart = ({ data, onHover, onLeave }) => {
     if (!data || data.length === 0) {
         return <div className="chart-placeholder">אין נתונים להצגה</div>;
@@ -314,45 +358,100 @@ const App: React.FC = () => {
         taxRate: 0.25,
     });
     const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, content: '' });
+    const [activePortfolioId, setActivePortfolioId] = useState<string>('default');
+    const [portfolios, setPortfolios] = useState<Array<{ id: string; name: string }>>([{ id: 'default', name: 'ברירת מחדל' }]);
 
     const [buyTransactions, setBuyTransactions] = useState<Transaction[]>([]);
     const [sellTransactions, setSellTransactions] = useState<Transaction[]>([]);
     const [isUpdatingStocks, setIsUpdatingStocks] = useState<boolean>(false);
+    const [symbolList, setSymbolList] = useState<string[]>(STOCK_LIST_BUNDLED);
+    const [showMigration, setShowMigration] = useState<boolean>(false);
     const [currentStockPrices, setCurrentStockPrices] = useState<Record<string, number>>({});
     const [isFetchingCurrentPrices, setIsFetchingCurrentPrices] = useState<boolean>(false);
+    const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
+    const [modal, setModal] = useState<null | { title?: string; message: any; actions: Array<{ label: string; value: string; variant?: 'primary' | 'danger' | 'default' }>; onClose?: (v: string | null) => void }>(null);
     
     // Simple cache for stock prices (5 minutes)
     const priceCache = useRef<Record<string, { price: number; timestamp: number }>>({});
     const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-    // Auth management
+    // Auth management (lightweight): set user and load settings + handle share token
     useEffect(() => {
-        const unsubscribe = onAuthStateChange((user) => {
-            setUser(user);
+        const unsubscribe = onAuthStateChange((u) => {
+            setUser(u);
             setIsLoading(false);
-            
-            if (user) {
-                // Load user data from Firestore
-                loadUserData(user.uid);
+            if (u) {
+                loadUserData(u.uid);
             } else {
-                // Clear data when user signs out
                 setBuyTransactions([]);
                 setSellTransactions([]);
+                setShowMigration(false);
             }
         });
-
         return () => unsubscribe();
     }, []);
 
-    
+    // Sharing removed: no read-only token handling
+
+    // Offline/online indicator
+    useEffect(() => {
+        const handleOnline = () => setIsOffline(false);
+        const handleOffline = () => setIsOffline(true);
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        return () => {
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+        };
+    }, []);
+    // Realtime listeners for current portfolio (buy/sell)
+    useEffect(() => {
+        if (!user) return;
+        // Clear current view while switching portfolios to avoid mixing entries
+        setBuyTransactions([]);
+        setSellTransactions([]);
+        const unsubBuy = listenTransactions(user.uid, activePortfolioId, 'buy', setBuyTransactions);
+        const unsubSell = listenTransactions(user.uid, activePortfolioId, 'sell', setSellTransactions);
+        return () => { unsubBuy(); unsubSell(); };
+    }, [user?.uid, activePortfolioId]);
+
+    // Portfolios listener and active portfolio guard
+    useEffect(() => {
+        if (!user) return;
+        const unsub = listenPortfolios(user.uid, (rows) => {
+            // Keep all portfolios as-is; do not synthesize default here
+            const list = rows.length ? rows : [{ id: 'default', name: 'ברירת מחדל' }];
+            setPortfolios(list);
+            if (!list.find(p => p.id === activePortfolioId)) {
+                setActivePortfolioId(list[0].id);
+            }
+        });
+        return () => unsub();
+    }, [user?.uid]);
+
+    // Migration visibility per active portfolio
+    useEffect(() => {
+        (async () => {
+            try {
+                if (!user) { setShowMigration(false); return; }
+                const hasBuy = await hasAnyTransactions(user.uid, activePortfolioId, 'buy');
+                const hasSell = await hasAnyTransactions(user.uid, activePortfolioId, 'sell');
+                if (hasBuy || hasSell) { setShowMigration(false); return; }
+                const legacy = await getUserData(user.uid);
+                const legacyBuys = legacy?.buyTransactions || [];
+                const legacySells = legacy?.sellTransactions || [];
+                setShowMigration((legacyBuys.length + legacySells.length) > 0);
+            } catch {
+                setShowMigration(false);
+            }
+        })();
+    }, [user?.uid, activePortfolioId]);
 
     const loadUserData = async (userId: string) => {
         try {
             // Try Firestore first
             const userData = await getUserData(userId);
             if (userData) {
-                setBuyTransactions(userData.buyTransactions || []);
-                setSellTransactions(userData.sellTransactions || []);
                 setSettings(userData.settings || settings);
                 return;
             }
@@ -364,8 +463,6 @@ const App: React.FC = () => {
             const localRaw = localStorage.getItem(`portfolio_backup_${userId}`);
             if (localRaw) {
                 const localData = JSON.parse(localRaw);
-                setBuyTransactions(localData.buyTransactions || []);
-                setSellTransactions(localData.sellTransactions || []);
                 if (localData.settings) setSettings(localData.settings);
             }
         } catch {
@@ -373,32 +470,19 @@ const App: React.FC = () => {
         }
     };
 
+    // removed startRealtime (handled by useEffect dependencies)
+
     const saveUserDataToFirebase = async () => {
-        if (user) {
+        if (!user) return;
             try {
                 const payload = {
-                    buyTransactions,
-                    sellTransactions,
                     settings,
                     lastUpdated: new Date().toISOString()
                 };
                 await saveUserData(user.uid, payload);
-                // Also keep a local backup to ensure persistence on intermittent connectivity
-                try { localStorage.setItem(`portfolio_backup_${user.uid}`, JSON.stringify(payload)); } catch {}
+            try { localStorage.setItem(`portfolio_settings_${user.uid}`, JSON.stringify(payload)); } catch {}
             } catch (error) {
-                console.error('Error saving user data:', error);
-                // Fallback: save locally and mark for later sync
-                try {
-                    const payload = {
-                        buyTransactions,
-                        sellTransactions,
-                        settings,
-                        lastUpdated: new Date().toISOString()
-                    };
-                    localStorage.setItem(`portfolio_backup_${user.uid}`, JSON.stringify(payload));
-                    localStorage.setItem(`portfolio_needs_sync_${user.uid}`, '1');
-                } catch {}
-            }
+            console.error('Error saving user settings:', error);
         }
     };
 
@@ -451,7 +535,7 @@ const App: React.FC = () => {
             setView('dashboard');
         } catch (error) {
             console.error('Error signing out:', error);
-            alert('שגיאה בהתנתקות: ' + (error as any).message);
+            setModal({ title: 'שגיאה', message: 'שגיאה בהתנתקות: ' + (error as any).message, actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         }
     };
 
@@ -470,14 +554,15 @@ const App: React.FC = () => {
     const handleManualSave = () => {
         if (user) {
             saveUserDataToFirebase();
-            alert('התיק נשמר בהצלחה!');
+            setModal({ title: 'שמירה', message: 'התיק נשמר בהצלחה!', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         } else {
-            alert('יש להתחבר כדי לשמור את התיק');
+            setModal({ title: 'שגיאה', message: 'יש להתחבר כדי לשמור את התיק', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         }
     };
 
     // פונקציית ייצוא
-    const handleExportToExcel = () => {
+    const handleExportToExcel = async () => {
+      const XLSX = await import('xlsx');
       const wb = XLSX.utils.book_new();
       const buySheet = XLSX.utils.json_to_sheet(buyTransactions);
       const sellSheet = XLSX.utils.json_to_sheet(sellTransactions);
@@ -489,9 +574,10 @@ const App: React.FC = () => {
     };
 
     // פונקציית ייבוא
-    const handleImportFromExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleImportFromExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
+      const XLSX = await import('xlsx');
       const reader = new FileReader();
       reader.onload = (evt) => {
         const data = evt.target?.result;
@@ -526,7 +612,7 @@ const App: React.FC = () => {
         if (buy.length) setBuyTransactions(buy);
         if (sell.length) setSellTransactions(sell);
         if (sett.length) setSettings(sett[0]);
-        alert('הנתונים יובאו בהצלחה!');
+        setModal({ title: 'ייבוא', message: 'הנתונים יובאו בהצלחה!', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
       };
       reader.readAsBinaryString(file);
     };
@@ -785,12 +871,12 @@ const App: React.FC = () => {
         const total = price * quantity;
         const commission = calculateCommission(total);
         
-        if (editingId) {
-            setBuyTransactions(prev => prev.map(t => t.id === editingId ? { ...t, stockName, price, quantity, date: buyDate, total, commission } : t));
-        } else {
-            const newTransaction: Transaction = { id: Date.now(), stockName, price, quantity, total, commission, date: buyDate };
-            setBuyTransactions(prev => [...prev, newTransaction]);
-        }
+        const newTx: Transaction = { id: editingId || Date.now(), stockName, price, quantity, total, commission, date: buyDate };
+        setBuyTransactions(prev => {
+            const exists = prev.some(t => t.id === newTx.id);
+            return exists ? prev.map(t => (t.id === newTx.id ? newTx : t)) : [...prev, newTx];
+        });
+        if (user) { void upsertTransaction(user.uid, activePortfolioId, 'buy', newTx as any); }
         
         resetBuyForm();
     };
@@ -806,10 +892,12 @@ const App: React.FC = () => {
 
     const handleDeleteBuy = (id: number) => {
         setBuyTransactions(prev => prev.filter(t => t.id !== id));
+        if (user) { void deleteTransaction(user.uid, activePortfolioId, 'buy', id); }
     };
 
     const handleDeleteSell = (id: number) => {
         setSellTransactions(prev => prev.filter(t => t.id !== id));
+        if (user) { void deleteTransaction(user.uid, activePortfolioId, 'sell', id); }
     };
     
     const handleAddSell = () => {
@@ -823,6 +911,7 @@ const App: React.FC = () => {
         const newTransaction: Transaction = { id: Date.now(), stockName: activeStock, price, quantity, total, commission, date: new Date().toISOString().split('T')[0] };
     
         setSellTransactions(prev => [...prev, newTransaction]);
+        if (user) { void upsertTransaction(user.uid, activePortfolioId, 'sell', newTransaction as any); }
         setSellPrice('');
         setSellQuantity('');
     };
@@ -839,7 +928,19 @@ const App: React.FC = () => {
             return;
         }
         try {
-            // Yahoo Finance API with CORS proxy
+            // Prefer external quotes endpoint if configured
+            if (QUOTES_ENDPOINT) {
+                const res = await fetchFromQuotesEndpoint([stockSymbol]);
+                const p = res?.[stockSymbol];
+                if (typeof p === 'number' && p > 0) {
+                    priceCache.current[stockSymbol] = { price: p, timestamp: Date.now() };
+                    setBuyPrice(String(p));
+                    setIsFetchingPrice(false);
+                    return;
+                }
+            }
+
+            // Fallback: Yahoo Finance API with CORS proxy
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
             console.log('Fetching price for:', stockSymbol);
@@ -864,12 +965,19 @@ const App: React.FC = () => {
             } else {
                 console.log('No valid price found in response');
             }
-            // If Yahoo Finance fails, show error
-            console.log('Yahoo Finance failed for:', stockSymbol);
-            alert(`לא הצלחתי למצוא מחיר עדכני עבור ${stockSymbol}. אנא הזן את המחיר ידנית.`);
+            // Fallback to our callable function aggregator (if enabled)
+            const res = await fetchQuotesViaFunction([stockSymbol]);
+            const p = res?.[stockSymbol];
+            if (typeof p === 'number' && p > 0) {
+                priceCache.current[stockSymbol] = { price: p, timestamp: Date.now() };
+                setBuyPrice(String(p));
+                setIsFetchingPrice(false);
+                return;
+            }
+            setModal({ title: 'מחיר לא נמצא', message: `לא הצלחתי למצוא מחיר עדכני עבור ${stockSymbol}. אנא הזן את המחיר ידנית.`, actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         } catch (error) {
             console.error("Error fetching stock price:", error);
-            alert(`שגיאה בעת הבאת מחיר עבור ${stockSymbol}. אנא הזן את המחיר ידנית.`);
+            setModal({ title: 'שגיאה', message: `שגיאה בעת הבאת מחיר עבור ${stockSymbol}. אנא הזן את המחיר ידנית.`, actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         } finally {
             setIsFetchingPrice(false);
         }
@@ -893,6 +1001,16 @@ const App: React.FC = () => {
                     return { stock, price: cached.price };
                 }
                 try {
+                    // Prefer external endpoint if configured
+                    if (QUOTES_ENDPOINT) {
+                        const res = await fetchFromQuotesEndpoint([stock]);
+                        const p = res?.[stock];
+                        if (typeof p === 'number' && p > 0) {
+                            priceCache.current[stock] = { price: p, timestamp: Date.now() };
+                            return { stock, price: p } as any;
+                        }
+                    }
+
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 8000);
                     const response = await fetch(
@@ -910,6 +1028,12 @@ const App: React.FC = () => {
                     }
                 } catch (error) {
                     console.error(`Yahoo Finance failed for ${stock}:`, error);
+                    const res = await fetchQuotesViaFunction([stock]);
+                    const p = res?.[stock];
+                    if (typeof p === 'number' && p > 0) {
+                        priceCache.current[stock] = { price: p, timestamp: Date.now() };
+                        return { stock, price: p } as any;
+                    }
                 }
                 return null;
             });
@@ -923,37 +1047,37 @@ const App: React.FC = () => {
             });
             setCurrentStockPrices(priceData);
         } catch (error) {
-            alert('שגיאה בעת טעינת מחירי מניות.');
+            setModal({ title: 'שגיאה', message: 'שגיאה בעת טעינת מחירי מניות.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         } finally {
             setIsFetchingCurrentPrices(false);
         }
     }, [allSummaries]);
 
+    useEffect(() => {
+        // Initialize symbols list from cache and refresh daily in background
+        (async () => {
+            const list = await initSymbolsList(STOCK_LIST_BUNDLED);
+            setSymbolList(list);
+        })();
+    }, []);
+
     const handleStockNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const value = e.target.value.toUpperCase();
         setBuyStockName(value);
+        // Clear price whenever symbol input changes to avoid stale values
+        setBuyPrice('');
         if (debounceRef.current) clearTimeout(debounceRef.current);
         if (value.length === 0) {
             setSuggestions([]);
             return;
         }
-        debounceRef.current = setTimeout(async () => {
+        debounceRef.current = setTimeout(() => {
             lastQueryRef.current = value;
-            try {
-                const res = await fetch(`https://financialmodelingprep.com/api/v3/search?query=${value}&limit=10&exchange=NASDAQ&apikey=${FMP_API_KEY}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    // בדוק שהערך לא השתנה בזמן ההמתנה
+            const results = symbolList.filter(sym => sym.includes(value)).slice(0, 10);
                     if (lastQueryRef.current === value) {
-                        setSuggestions(data.map((item: any) => `${item.symbol} - ${item.name}`));
-                    }
-                } else {
-                    setSuggestions([]);
-                }
-            } catch {
-                setSuggestions([]);
+                setSuggestions(results);
             }
-        }, 350);
+        }, 250);
     };
     
     const selectSuggestion = (suggestion: string) => {
@@ -975,12 +1099,11 @@ const App: React.FC = () => {
     const handleUpdateStockList = async () => {
         setIsUpdatingStocks(true);
         try {
-            // For now, we'll use a static list since we removed the AI dependency
-            // In the future, you could integrate with a stock list API
-            alert('רשימת המניות הנוכחית כוללת את המניות הפופולריות ביותר. עדכון אוטומטי זמין בגרסה מתקדמת יותר.');
+            // For now, we'll use a static list
+            setModal({ title: 'מידע', message: 'רשימת המניות הנוכחית כוללת את המניות הפופולריות ביותר. עדכון אוטומטי זמין בגרסה מתקדמת יותר.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         } catch (error) {
             console.error("Error updating stock list:", error);
-            alert('כשלון בעדכון רשימת המניות. נסה שוב מאוחר יותר.');
+            setModal({ title: 'שגיאה', message: 'כשלון בעדכון רשימת המניות. נסה שוב מאוחר יותר.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         } finally {
             setIsUpdatingStocks(false);
         }
@@ -1655,6 +1778,104 @@ const App: React.FC = () => {
       return insights;
     };
 
+    // --- Performance helpers ---
+    const computeEquityCurveFromSells = useCallback(() => {
+      // Cumulative realized net PnL over time (approximate equity curve using closed trades only)
+      const sells = [...sellTransactions].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      let cum = 0;
+      const points: Array<{ x: number; y: number }> = [];
+      for (const s of sells) {
+        const date = new Date(s.date);
+        const realizedNet = Number(((s as any).realizedNet) ?? 0);
+        cum += realizedNet;
+        points.push({ x: date.getTime(), y: cum });
+      }
+      return points;
+    }, [sellTransactions]);
+
+    const computeMaxDrawdown = useCallback((series: Array<{ x: number; y: number }>) => {
+      let peak = -Infinity;
+      let maxDd = 0;
+      for (const p of series) {
+        peak = Math.max(peak, p.y);
+        const dd = peak - p.y;
+        if (dd > maxDd) maxDd = dd;
+      }
+      return maxDd; // in currency units (same as y)
+    }, []);
+
+    const computeMonthlyHeatmap = useCallback((monthsBack: number = 12) => {
+      // Aggregate realized net PnL by year-month from sell transactions
+      const map = new Map<string, number>();
+      for (const s of sellTransactions) {
+        const d = new Date(s.date);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const realizedNet = Number(((s as any).realizedNet) ?? 0);
+        map.set(key, (map.get(key) || 0) + realizedNet);
+      }
+      const now = new Date();
+      const out: Array<{ key: string; label: string; value: number }> = [];
+      for (let i = monthsBack - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        const label = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getFullYear()).slice(-2)}`;
+        out.push({ key, label, value: map.get(key) || 0 });
+      }
+      return out;
+    }, [sellTransactions]);
+
+    // --- Analytics helpers (realized trades) ---
+    const computeRealizedTrades = useCallback(() => {
+      type Lot = { remaining: number; costBasisPerShare: number; date: string };
+      const results: Array<{ stock: string; date: string; realizedNet: number; realizedPercent: number; holdingDays: number }>
+        = [];
+      const stocks = new Set<string>([
+        ...buyTransactions.map(t => t.stockName),
+        ...sellTransactions.map(t => t.stockName)
+      ]);
+      for (const stock of stocks) {
+        const buys: Lot[] = buyTransactions
+          .filter(t => t.stockName === stock)
+          .slice()
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+          .map(b => ({
+            remaining: b.quantity,
+            costBasisPerShare: (b.price * b.quantity + b.commission) / Math.max(1, b.quantity),
+            date: b.date,
+          }));
+        const sells = sellTransactions
+          .filter(t => t.stockName === stock)
+          .slice()
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+        for (const s of sells) {
+          let qtyToMatch = s.quantity;
+          let allocatedCost = 0;
+          let weightedBuyDateMs = 0;
+          let matchedQty = 0;
+          for (const lot of buys) {
+            if (qtyToMatch <= 0) break;
+            if (lot.remaining <= 0) continue;
+            const take = Math.min(lot.remaining, qtyToMatch);
+            allocatedCost += take * lot.costBasisPerShare;
+            weightedBuyDateMs += take * new Date(lot.date).getTime();
+            lot.remaining -= take;
+            qtyToMatch -= take;
+            matchedQty += take;
+          }
+          const proceeds = s.price * s.quantity;
+          const realizedNet = (proceeds - allocatedCost) - s.commission;
+          const realizedPercent = allocatedCost > 0 ? (realizedNet / allocatedCost) * 100 : 0;
+          let holdingDays = 0;
+          if (matchedQty > 0) {
+            const avgBuyTime = weightedBuyDateMs / matchedQty;
+            holdingDays = Math.max(0, Math.round((new Date(s.date).getTime() - avgBuyTime) / (1000 * 60 * 60 * 24)));
+          }
+          results.push({ stock, date: s.date, realizedNet, realizedPercent, holdingDays });
+        }
+      }
+      return results;
+    }, [buyTransactions, sellTransactions]);
+
     const renderPerformancePage = () => {
       // KPI
       const kpiData = [
@@ -1770,6 +1991,21 @@ const App: React.FC = () => {
                 <div className="kpi-value">{k.value}</div>
               </div>
             ))}
+          </div>
+
+          {/* Equity Curve + Max Drawdown */}
+          <div className="card">
+            <h2>עקומת הון (סגירות ממומשות)</h2>
+            {(() => {
+              const eq = computeEquityCurveFromSells();
+              const maxDd = computeMaxDrawdown(eq);
+              return (
+                <>
+                  <LineChart data={eq} />
+                  <div className="table-disclaimer">Max Drawdown: {formatCurrency(maxDd)}</div>
+                </>
+              );
+            })()}
           </div>
           
           {/* מניות פעילות (לפני מימוש) */}
@@ -1950,6 +2186,27 @@ const App: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Heatmap חודשי (ממומש) */}
+          <div className="card">
+            <h2>רווח/הפסד נטו חודשי (ממומש)</h2>
+            {(() => {
+              const hm = computeMonthlyHeatmap(12);
+              return (
+                <div className="heatmap-container">
+                  {hm.map(cell => (
+                    <div key={cell.key} className="heatmap-item" style={{
+                      backgroundColor: cell.value >= 0 ? `rgba(34, 140, 59, ${Math.min(Math.abs(cell.value) / 1000, 0.8)})` : `rgba(211, 47, 47, ${Math.min(Math.abs(cell.value) / 1000, 0.8)})`,
+                      color: Math.abs(cell.value) > 250 ? '#fff' : 'var(--text-color)'
+                    }}>
+                      <div className="heatmap-stock">{cell.label}</div>
+                      <div className={"heatmap-performance " + pnlClass(cell.value)}>{formatCurrency(cell.value)}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
         </div>
       );
     };
@@ -1976,6 +2233,16 @@ const App: React.FC = () => {
                 quantity: summary.remainingQuantity
             };
         });
+
+        const realizedTrades = computeRealizedTrades();
+        const wins = realizedTrades.filter(t => t.realizedNet > 0);
+        const losses = realizedTrades.filter(t => t.realizedNet < 0);
+        const winLossRatio = losses.length > 0 ? (wins.length / losses.length) : (wins.length > 0 ? Infinity : 0);
+        const grossProfit = wins.reduce((s, t) => s + t.realizedNet, 0);
+        const grossLoss = Math.abs(losses.reduce((s, t) => s + t.realizedNet, 0));
+        const profitFactor = grossLoss > 0 ? (grossProfit / grossLoss) : (grossProfit > 0 ? Infinity : 0);
+        const expectancy = realizedTrades.length > 0 ? (grossProfit - grossLoss) / realizedTrades.length : 0;
+        const avgHoldingDays = realizedTrades.length > 0 ? (realizedTrades.reduce((s,t)=> s + t.holdingDays, 0) / realizedTrades.length) : 0;
 
         const portfolioStats = {
             totalStocks: allStocks.length,
@@ -2023,6 +2290,22 @@ const App: React.FC = () => {
                                 {portfolioStats.avgReturn.toFixed(2)}%
                             </div>
                         </div>
+                        <div className="kpi-card">
+                            <div className="kpi-label">Win/Loss</div>
+                            <div className="kpi-value">{wins.length}/{losses.length}</div>
+                        </div>
+                        <div className="kpi-card">
+                            <div className="kpi-label">Profit Factor</div>
+                            <div className="kpi-value">{profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</div>
+                        </div>
+                        <div className="kpi-card">
+                            <div className="kpi-label">Expectancy (לעסקה)</div>
+                            <div className={`kpi-value ${pnlClass(expectancy)}`}>{formatCurrency(expectancy)}</div>
+                        </div>
+                        <div className="kpi-card">
+                            <div className="kpi-label">זמן החזקה ממוצע</div>
+                            <div className="kpi-value">{avgHoldingDays.toFixed(1)} ימים</div>
+                        </div>
                     </div>
 
                     {/* Top Performers */}
@@ -2059,6 +2342,62 @@ const App: React.FC = () => {
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    </div>
+
+                    {/* Top-5 Winners/Losers (by realized net) */}
+                    <div className="performance-grid-2-col">
+                        <div className="card">
+                            <h3>Top-5 מניות מנצחות (Realized)</h3>
+                            <div className="table-container">
+                                <table className="stocks-table">
+                                    <thead>
+                                        <tr>
+                                            <th>מניה</th>
+                                            <th>רווח נטו</th>
+                                            <th>תשואה (%)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {[...realizedTrades]
+                                          .sort((a,b)=> b.realizedNet - a.realizedNet)
+                                          .slice(0,5)
+                                          .map((t, idx)=> (
+                                            <tr key={idx}>
+                                              <td>{t.stock}</td>
+                                              <td className={pnlClass(t.realizedNet)}>{formatCurrency(t.realizedNet)}</td>
+                                              <td className={pnlClass(t.realizedPercent)}>{t.realizedPercent.toFixed(2)}%</td>
+                                            </tr>
+                                          ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div className="card">
+                            <h3>Top-5 מניות מפסידות (Realized)</h3>
+                            <div className="table-container">
+                                <table className="stocks-table">
+                                    <thead>
+                                        <tr>
+                                            <th>מניה</th>
+                                            <th>הפסד נטו</th>
+                                            <th>תשואה (%)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {[...realizedTrades]
+                                          .sort((a,b)=> a.realizedNet - b.realizedNet)
+                                          .slice(0,5)
+                                          .map((t, idx)=> (
+                                            <tr key={idx}>
+                                              <td>{t.stock}</td>
+                                              <td className={pnlClass(t.realizedNet)}>{formatCurrency(t.realizedNet)}</td>
+                                              <td className={pnlClass(t.realizedPercent)}>{t.realizedPercent.toFixed(2)}%</td>
+                                            </tr>
+                                          ))}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
@@ -2243,6 +2582,48 @@ const App: React.FC = () => {
                             <svg width="18" height="18" fill="#0070c0" viewBox="0 0 16 16"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">⇧</text></svg>
                         </label>
                     </div>
+                    {showMigration && (<>
+                    <div className="divider" style={{ margin: '16px 0', borderTop: '1px solid var(--border-color)' }} />
+                    <div className="migrations">
+                        <h3>הסבת נתונים ל-Cloud Firestore</h3>
+                        <p>העברת הטרנזקציות מהמבנה הישן (מערכים במסמך משתמש) למבנה החדש (תתי-אוספים). הפעלה חד-פעמית למשתמש הנוכחי.</p>
+                        <button
+                          className="btn"
+                          onClick={async () => {
+                            try {
+                              if (!user) return;
+                              const legacy = await getUserData(user.uid);
+                              const legacyBuys = legacy?.buyTransactions || [];
+                              const legacySells = legacy?.sellTransactions || [];
+                              if (legacyBuys.length === 0 && legacySells.length === 0) {
+                                setModal({ title: 'מידע', message: 'לא נמצאו טרנזקציות להסבה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                                return;
+                              }
+                              setModal({
+                                title: 'אישור הסבה',
+                                message: `יימחק הצורך במערכים במסמך המשתמש ויועברו ${legacyBuys.length} קניות ו-${legacySells.length} מכירות לתת-אוספים. האם להמשיך?`,
+                                actions: [
+                                  { label: 'בטל', value: 'cancel' },
+                                  { label: 'המשך', value: 'ok', variant: 'primary' }
+                                ],
+                                onClose: async (v) => {
+                                  setModal(null);
+                                  if (v !== 'ok') return;
+                                  const { bulkImportTransactions } = await import('./data/transactions');
+                                  await bulkImportTransactions(user.uid, activePortfolioId, 'buy', legacyBuys as any);
+                                  await bulkImportTransactions(user.uid, activePortfolioId, 'sell', legacySells as any);
+                                  setModal({ title: 'הצלחה', message: 'ההסבה הסתיימה בהצלחה! הנתונים יוצגו בזמן אמת מהמבנה החדש.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                                  setShowMigration(false);
+                                }
+                              });
+                            } catch (e) {
+                              console.error('Migration failed', e);
+                              setModal({ title: 'שגיאה', message: 'שגיאה בהסבה. נסה שוב.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                            }
+                          }}
+                        >הסב נתונים למבנה החדש</button>
+                    </div>
+                    </>)}
                 </div>
             </div>
         );
@@ -2287,9 +2668,111 @@ const App: React.FC = () => {
     return (
         <div className="app-container">
             <header className="app-header">
+        {modal && (
+          <Modal
+            title={modal.title}
+            message={modal.message}
+            actions={modal.actions}
+            withInput={modal.withInput}
+            inputLabel={modal.inputLabel}
+            inputPlaceholder={modal.inputPlaceholder}
+            inputDefaultValue={modal.inputDefaultValue}
+            onClose={(v, text) => modal.onClose ? modal.onClose(v, text) : setModal(null)}
+          />
+        )}
+                {isOffline && (
+                  <div className="offline-banner">אתה במצב אופליין (קריאה בלבד). שינויים יסתנכרנו כשיהיה חיבור.</div>
+                )}
                 <div className="brand">
                   <AppLogo />
                 <h1>מחשבון רווח והפסד למניות</h1>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <label style={{ fontWeight: 700 }}>תיק פעיל:</label>
+                  <select value={activePortfolioId} onChange={(e) => {
+                    const next = e.target.value || 'default';
+                    setActivePortfolioId(next);
+                  }}>
+                    {portfolios.map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <button className="filter-btn" onClick={async () => {
+                    if (!user) return;
+                    setModal({
+                      title: 'תיק חדש',
+                      message: '',
+                      withInput: true,
+                      inputLabel: 'שם התיק החדש',
+                      inputPlaceholder: 'למשל: חשבון מסחר',
+                      actions: [
+                        { label: 'בטל', value: 'cancel' },
+                        { label: 'צור', value: 'ok', variant: 'primary' }
+                      ],
+                      onClose: async (v, text) => {
+                        setModal(null);
+                        if (v !== 'ok') return;
+                        const name = (text || '').trim();
+                        if (!name) return;
+                        const id = await createPortfolio(user.uid, name);
+                        setActivePortfolioId(id);
+                      }
+                    });
+                  }}>תיק חדש</button>
+                  <button className="filter-btn" onClick={async () => {
+                    if (!user) return;
+                    const p = portfolios.find(p => p.id === activePortfolioId);
+                    if (!p) return;
+                    setModal({
+                      title: 'שינוי שם תיק',
+                      message: '',
+                      withInput: true,
+                      inputLabel: `שם חדש לתיק "${p.name}"`,
+                      inputDefaultValue: p.name,
+                      actions: [
+                        { label: 'בטל', value: 'cancel' },
+                        { label: 'שמור', value: 'ok', variant: 'primary' }
+                      ],
+                      onClose: async (v, text) => {
+                        setModal(null);
+                        if (v !== 'ok') return;
+                        const name = (text || '').trim();
+                        if (!name) return;
+                        await renamePortfolio(user.uid, activePortfolioId, name);
+                      }
+                    });
+                  }}>שנה שם</button>
+                  <button className="filter-btn" onClick={async () => {
+                    if (!user) return;
+                    const p = portfolios.find(p => p.id === activePortfolioId);
+                    if (!p) return;
+                    setModal({
+                      title: 'ניהול תיק',
+                      message: `בחר פעולה על התיק "${p.name}":`,
+                      actions: [
+                        { label: 'נקה תוכן', value: 'clear' },
+                        { label: 'מחק תיק', value: 'delete', variant: 'danger' },
+                        { label: 'בטל', value: 'cancel' }
+                      ],
+                      onClose: async (v) => {
+                        setModal(null);
+                        if (v === 'clear') {
+                          const { clearPortfolio } = await import('./data/portfolios');
+                          await clearPortfolio(user.uid!, activePortfolioId);
+                          return;
+                        }
+                        if (v === 'delete') {
+                          await deletePortfolio(user.uid!, activePortfolioId);
+                          const next = portfolios.find(x => x.id !== activePortfolioId) || { id: 'default', name: 'ברירת מחדל' };
+                          setActivePortfolioId(next.id);
+                        }
+                      }
+                    });
+                    // בחירה אוטומטית בתיק הראשון שנשאר
+                    const next = portfolios.find(x => x.id !== activePortfolioId) || { id: 'default', name: 'ברירת מחדל' };
+                    setActivePortfolioId(next.id);
+                  }}>מחק תיק</button>
+                  
                 </div>
                 <div className="user-info">
                     <span className="user-name">{user.displayName || user.email}</span>

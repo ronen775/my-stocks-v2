@@ -54,11 +54,25 @@ VITE_FIREBASE_APP_ID=1:123456789:web:abcdef123456
 3. לחץ על "התחבר עם Google"
 4. אשר את הכניסה עם חשבון Google שלך
 
+## שלב 7: App Check (מומלץ)
+
+1. עבור ל-Firebase Console → App Check
+2. בחר ביישום ה-Web שלך והפעל ReCaptcha v3 (חינמי)
+3. העתק את ה-Site Key
+4. הוסף ל-`.env.local` שורה:
+
+```
+VITE_APPCHECK_SITE_KEY=your_recaptcha_v3_site_key
+```
+
+5. רענן `npm run dev`
+
 ## הערות חשובות
 
 - וודא שהדומיין `localhost:5173` מופיע ברשימת הדומיינים המורשים ב-Firebase Authentication
 - לפיתוח, Firestore Database צריך להיות במצב "test mode"
 - לפריסה, תצטרך להגדיר כללי אבטחה מתאימים ב-Firestore
+  - ניתן להדביק את הכללים מקובץ `firestore.rules` תחת Firestore → Rules בקונסול, ולאחר מכן Publish
 
 ## פתרון בעיות
 
