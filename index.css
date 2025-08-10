@@ -202,6 +202,12 @@ body {
   gap: 8px;
 }
 
+.indices-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .indices-title {
   font-weight: 700;
   margin-bottom: 6px;

@@ -456,10 +456,10 @@ Example for "MSFT, GOOG": {"MSFT": 450.12, "GOOG": 175.67}`;
                     if (typeof price === 'number' && price > 0) results[sym] = price;
                 } catch {}
             }
-            setCurrentStockPrices(prevPrices => ({
-                ...prevPrices,
+                setCurrentStockPrices(prevPrices => ({
+                    ...prevPrices,
                 ...results,
-            }));
+                }));
 
         } catch (error) {
             console.error("An unexpected error occurred while fetching portfolio prices:", error);

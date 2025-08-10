@@ -1,5 +1,10 @@
-### Workflow disabled as per user request
-# Intentionally left blank
+name: "Update Symbols (disabled)"
+on:
+  workflow_dispatch: {}
 
-
-
+jobs:
+  noop:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "This workflow is disabled."

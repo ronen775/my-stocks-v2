@@ -72,8 +72,9 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
   const symbols: Array<{ s: string; d: string; alt?: string }> = [
     { s: 'FOREXCOM:SPXUSD', d: 'S&P 500' },
     { s: 'NASDAQ:NDX', d: 'Nasdaq 100' },
+    { s: 'AMEX:IWM', d: 'Russell 2000' },
     { s: 'COINBASE:BTCUSD', alt: 'BINANCE:BTCUSDT', d: 'Bitcoin' },
-    { s: 'AMEX:IWM', d: 'Russell 2000' }
+    { s: 'COINBASE:ETHUSD', alt: 'BINANCE:ETHUSDT', d: 'Ethereum' }
   ];
 
   useEffect(() => {
@@ -128,16 +129,32 @@ const IndicesWidget: React.FC<{ dark: boolean }> = ({ dark }) => {
         <div className="indices-chart tradingview-widget-container" ref={chartRef} />
         <div className="indices-list">
           <div className="indices-title">מדדי ארה"ב</div>
-          {symbols.map(sym => (
-            <button
-              key={sym.s}
-              className={'indices-item' + (selected.s === sym.s ? ' active' : '')}
-              onClick={() => setSelected(sym)}
-              type="button"
-            >
-              {sym.d}
-            </button>
-          ))}
+          {symbols
+            .filter(sym => sym.d === 'S&P 500' || sym.d === 'Nasdaq 100' || sym.d === 'Russell 2000')
+            .map(sym => (
+              <button
+                key={sym.s}
+                className={'indices-item' + (selected.s === sym.s ? ' active' : '')}
+                onClick={() => setSelected(sym)}
+                type="button"
+              >
+                {sym.d}
+              </button>
+            ))}
+          <div className="indices-row">
+            {symbols
+              .filter(sym => sym.d === 'Bitcoin' || sym.d === 'Ethereum')
+              .map(sym => (
+                <button
+                  key={sym.s}
+                  className={'indices-item' + (selected.s === sym.s ? ' active' : '')}
+                  onClick={() => setSelected(sym)}
+                  type="button"
+                >
+                  {sym.d}
+                </button>
+              ))}
+          </div>
         </div>
       </div>
     </div>
@@ -369,7 +386,25 @@ const App: React.FC = () => {
     const [currentStockPrices, setCurrentStockPrices] = useState<Record<string, number>>({});
     const [isFetchingCurrentPrices, setIsFetchingCurrentPrices] = useState<boolean>(false);
     const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
-    const [modal, setModal] = useState<null | { title?: string; message: any; actions: Array<{ label: string; value: string; variant?: 'primary' | 'danger' | 'default' }>; onClose?: (v: string | null) => void }>(null);
+    const [modal, setModal] = useState<
+      | null
+      | {
+          title?: string;
+          message: any;
+          actions: Array<{
+            label: string;
+            value: string;
+            variant?: 'primary' | 'danger' | 'default';
+          }>;
+          onClose?: (v: string | null, payload?: any) => any;
+          withInput?: boolean;
+          inputLabel?: string;
+          inputPlaceholder?: string;
+          inputDefaultValue?: string;
+          selectOptions?: Array<{ value: string; label: string }>;
+          multiSelect?: boolean;
+        }
+    >(null);
     
     // Simple cache for stock prices (5 minutes)
     const priceCache = useRef<Record<string, { price: number; timestamp: number }>>({});
