@@ -943,17 +943,19 @@ const App: React.FC = () => {
             // Fallback: Yahoo Finance API with CORS proxy
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
-            
-            const response = await fetch(
-                `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${stockSymbol}?interval=1d&range=1d`,
-                { signal: controller.signal }
-            );
-            
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+            let data: any;
+            try {
+                const response = await fetch(
+                    `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${stockSymbol}?interval=1d&range=1d`,
+                    { signal: controller.signal }
+                );
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                data = await response.json();
+            } finally {
+                clearTimeout(timeoutId);
             }
-            const data = await response.json();
-            clearTimeout(timeoutId);
             
             const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
             if (price && price > 0) {
@@ -1013,18 +1015,21 @@ const App: React.FC = () => {
 
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 8000);
-                    const response = await fetch(
-                        `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${stock}?interval=1d&range=1d`,
-                        { signal: controller.signal }
-                    );
-                    if (response.ok) {
-                        const data = await response.json();
-                        clearTimeout(timeoutId);
-                        const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-                        if (price && price > 0) {
-                            priceCache.current[stock] = { price, timestamp: Date.now() };
-                            return { stock, price };
+                    try {
+                        const response = await fetch(
+                            `https://corsproxy.io/?https://query1.finance.yahoo.com/v8/finance/chart/${stock}?interval=1d&range=1d`,
+                            { signal: controller.signal }
+                        );
+                        if (response.ok) {
+                            const data = await response.json();
+                            const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+                            if (price && price > 0) {
+                                priceCache.current[stock] = { price, timestamp: Date.now() };
+                                return { stock, price };
+                            }
                         }
+                    } finally {
+                        clearTimeout(timeoutId);
                     }
                 } catch (error) {
                     console.error(`Yahoo Finance failed for ${stock}:`, error);
@@ -1045,13 +1050,26 @@ const App: React.FC = () => {
                     priceData[result.stock] = result.price;
                 }
             });
-            setCurrentStockPrices(priceData);
+            setCurrentStockPrices(prev => ({ ...prev, ...priceData }));
         } catch (error) {
             setModal({ title: 'שגיאה', message: 'שגיאה בעת טעינת מחירי מניות.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
         } finally {
             setIsFetchingCurrentPrices(false);
         }
     }, [allSummaries]);
+
+    // Auto-fetch current prices on dashboard when there are open stocks without a shown price
+    useEffect(() => {
+        if (view !== 'dashboard') return;
+        const openStocks = allSummaries
+            .filter(s => s.summary.remainingQuantity > 0)
+            .map(s => s.stock);
+        if (openStocks.length === 0) return;
+        const missing = openStocks.filter(s => currentStockPrices[s] == null);
+        if (missing.length > 0 && !isFetchingCurrentPrices) {
+            void fetchCurrentPricesForOpenPortfolio();
+        }
+    }, [view, allSummaries, currentStockPrices, isFetchingCurrentPrices, fetchCurrentPricesForOpenPortfolio]);
 
     useEffect(() => {
         // Initialize symbols list from cache and refresh daily in background
