@@ -67,12 +67,13 @@ try {
   // silent in production
 }
 
-// Auth functions
+// Auth functions - Disabled when Firebase not configured
 export const signInWithGoogle = async () => {
+  if (!isFirebaseConfigured) {
+    console.warn('Firebase Auth disabled - sign in not available');
+    return null;
+  }
   try {
-    if (!isFirebaseConfigured) {
-      throw new Error('Firebase is not configured in this build.');
-    }
     const result = await signInWithPopup(auth, googleProvider!);
     return result.user;
   } catch (error) {
@@ -84,8 +85,11 @@ export const signInWithGoogle = async () => {
 };
 
 export const signOutUser = async () => {
+  if (!isFirebaseConfigured) {
+    console.warn('Firebase Auth disabled - sign out not available');
+    return;
+  }
   try {
-    if (!isFirebaseConfigured) return;
     await signOut(auth);
   } catch (error) {
     console.error('Error signing out:', error);
@@ -131,6 +135,7 @@ export const getUserData = async (userId: string) => {
 // Auth state listener
 export const onAuthStateChange = (callback: (user: User | null) => void) => {
   if (!isFirebaseConfigured) {
+    console.warn('Firebase Auth disabled - auth state not available');
     callback(null);
     return () => {};
   }

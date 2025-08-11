@@ -1,5 +1,7 @@
 {
-  "name": "מחשבון רווח והפסד למניות",
-  "description": "מחשבון לחישוב רווח והפסד בקנייה ומכירה של מניות, כולל עמלות ומיסים.",
-  "requestFramePermissions": []
+  "entry": "index.tsx",
+  "styles": ["index.css"],
+  "generated": "This metadata.json was unified to the project root."
 }
+
+

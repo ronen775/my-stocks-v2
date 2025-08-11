@@ -4,7 +4,7 @@
  * - https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt
  * - https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt (NYSE/NYSE MKT etc.)
  *
- * This script merges, filters out ETFs and test issues, and writes to 'כללי/stockList.ts'.
+ * This script merges, filters out ETFs and test issues, and writes to 'stockList.ts'.
  * Run: npm run update:symbols
  */
 
@@ -97,7 +97,7 @@ async function main() {
   console.log(`Collected: nasdaq=${nasdaqSyms.length}, other=${otherSyms.length}, merged=${all.length}`);
 
   const tsContent = toTsArray(all);
-  const outPath = path.join(process.cwd(), 'כללי', 'stockList.ts');
+  const outPath = path.join(process.cwd(), 'stockList.ts');
   await fs.writeFile(outPath, tsContent, 'utf8');
   console.log(`Wrote ${all.length} symbols to ${outPath}`);
 }
