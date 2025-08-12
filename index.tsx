@@ -233,6 +233,7 @@ interface Settings {
     taxRate: number;
     minYear?: number;
     maxYear?: number;
+    sheetsSpreadsheetId?: string;
 }
 
 interface StockSummary {
@@ -467,6 +468,7 @@ const App: React.FC = () => {
         taxRate: 0.25,
         minYear: MIN_YEAR,
         maxYear: MAX_YEAR,
+        sheetsSpreadsheetId: ''
     });
     const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, content: '' });
     const [activePortfolioId, setActivePortfolioId] = useState<string>('default');
@@ -2898,6 +2900,28 @@ const App: React.FC = () => {
                             setModal({ title: 'חיבור הושלם', message: 'החיבור ל-Google Sheets בוצע בהצלחה. כעת ניתן לייצא/לייבא ישירות מהגיליון.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
                         }}>
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="#0F9D58"><path d="M19 2H8c-1.1 0-2 .9-2 2v3H5c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2v-3h1c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-3 16H5V9h11v9zm3-5h-1V8c0-1.1-.9-2-2-2H8V4h11v9z"/></svg>
+                        </button>
+                        <button className="btn-export-inline" title="צור גיליון תבנית" onClick={async ()=>{
+                            try {
+                                const token = await connectGoogleSheets();
+                                if (!token) { setModal({ title: 'שגיאה', message: 'נדרש חיבור ל-Google Sheets.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) }); return; }
+                                const resp = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+                                    method: 'POST',
+                                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ properties: { title: 'Stock Calculator - Template' }, sheets: [{ properties: { title: 'קניות' } }, { properties: { title: 'מכירות' } }, { properties: { title: 'הגדרות' } }] })
+                                });
+                                const data = await resp.json();
+                                if (!resp.ok || !data?.spreadsheetId) throw new Error('create failed');
+                                const sid = data.spreadsheetId as string;
+                                const values = { valueInputOption: 'RAW', data: [ { range: 'קניות!A1:G1', values: [['id','stockName','price','quantity','total','commission','date']] }, { range: 'מכירות!A1:G1', values: [['id','stockName','price','quantity','total','commission','date']] }, { range: 'הגדרות!A1:D1', values: [['minCommission','commissionRate','additionalFee','taxRate']] } ] } as any;
+                                await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values:batchUpdate`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+                                setSettings(prev => ({ ...prev, sheetsSpreadsheetId: sid }));
+                                setModal({ title: 'תבנית נוצרה', message: 'נוצר גיליון תבנית עם כותרות אחידות. ניתן לשתף/למלא נתונים וליבא/לייצא.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                            } catch (e) {
+                                setModal({ title: 'שגיאה', message: 'יצירת הגיליון נכשלה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                            }
+                        }}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="#0F9D58"><path d="M3 3h18v18H3z" fill="#fff"/><path d="M7 7h10v2H7zm0 4h10v2H7zm0 4h6v2H7z" fill="#0F9D58"/></svg>
                         </button>
                     </div>
                     {showMigration && (<>
