@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
-import { signInWithGoogle, signOutUser, getCurrentUser, saveUserData, getUserData, onAuthStateChange, fetchQuotesViaFunction } from './firebase-config';
+import { signInWithGoogle, signOutUser, getCurrentUser, saveUserData, getUserData, onAuthStateChange, fetchQuotesViaFunction, connectGoogleSheets } from './firebase-config';
 import { Modal } from './components/Modal';
 import { listenTransactions, upsertTransaction, deleteTransaction, hasAnyTransactions } from './data/transactions';
 // Sharing features removed for now
@@ -2889,6 +2889,16 @@ const App: React.FC = () => {
                             <input ref={importInputRef as any} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImportFromExcel} />
                             <svg width="18" height="18" fill="#0070c0" viewBox="0 0 16 16"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">⇧</text></svg>
                         </label>
+                        <button className="btn-export-inline" title="חיבור ל-Google Sheets" onClick={async ()=>{
+                            const token = await connectGoogleSheets();
+                            if (!token) {
+                                setModal({ title: 'שגיאה', message: 'החיבור ל-Google Sheets נכשל. נסה שוב.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                                return;
+                            }
+                            setModal({ title: 'חיבור הושלם', message: 'החיבור ל-Google Sheets בוצע בהצלחה. כעת ניתן לייצא/לייבא ישירות מהגיליון.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                        }}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="#0F9D58"><path d="M19 2H8c-1.1 0-2 .9-2 2v3H5c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2v-3h1c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-3 16H5V9h11v9zm3-5h-1V8c0-1.1-.9-2-2-2H8V4h11v9z"/></svg>
+                        </button>
                     </div>
                     {showMigration && (<>
                         <div className="divider" style={{ margin: '16px 0', borderTop: '1px solid var(--border-color)' }} />

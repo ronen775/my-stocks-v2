@@ -84,6 +84,23 @@ export const signInWithGoogle = async () => {
   }
 };
 
+// Request additional OAuth scopes for Google Sheets/Drive and return an access token
+export const connectGoogleSheets = async (): Promise<string | null> => {
+  if (!isFirebaseConfigured) return null;
+  try {
+    const provider = new GoogleAuthProvider();
+    provider.addScope('https://www.googleapis.com/auth/spreadsheets');
+    provider.addScope('https://www.googleapis.com/auth/drive.file');
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const accessToken = (credential as any)?.accessToken as string | undefined;
+    return accessToken || null;
+  } catch (error) {
+    console.error('Error connecting Google Sheets scopes:', error);
+    return null;
+  }
+};
+
 export const signOutUser = async () => {
   if (!isFirebaseConfigured) {
     console.warn('Firebase Auth disabled - sign out not available');
