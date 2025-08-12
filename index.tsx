@@ -231,6 +231,8 @@ interface Settings {
     commissionRate: number;
     additionalFee: number;
     taxRate: number;
+    minYear?: number;
+    maxYear?: number;
 }
 
 interface StockSummary {
@@ -260,10 +262,100 @@ const formatCurrency = (value: number) => {
     return value < 0 ? `-${formatted}` : formatted;
 };
 
+// Date helpers and safe formatting
+const MIN_YEAR = 1900;
+const MAX_YEAR = 2200;
+
+const parseLooseDate = (dateString: string): Date | null => {
+    if (!dateString) return null;
+    const s = String(dateString).trim();
+    let date: Date | null = null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        date = new Date(`${s}T00:00:00Z`);
+    } else if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) {
+        const [y, m, d] = s.split('-').map(Number);
+        date = new Date(Date.UTC(y, m - 1, d));
+    } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+        const [d, m, y] = s.split('/').map(Number);
+        date = new Date(Date.UTC(y, m - 1, d));
+    } else if (/^\d{2}\.\d{2}\.\d{4}$/.test(s)) {
+        const [d, m, y] = s.split('.').map(Number);
+        date = new Date(Date.UTC(y, m - 1, d));
+    } else if (/^\d{1,2}[\.\/-]\d{1,2}[\.\/-]\d{2}$/.test(s)) {
+        // Two-digit year, assume 00-69 -> 2000-2069, 70-99 -> 1970-1999
+        const parts = s.split(/[\.\/-]/).map(Number);
+        const d = parts[0];
+        const m = parts[1];
+        const yy = parts[2];
+        const y = yy < 70 ? 2000 + yy : 1900 + yy;
+        date = new Date(Date.UTC(y, m - 1, d));
+    } else if (/^\d{1,2}[-\s][A-Za-z]{3,9}[-\s]\d{2,4}$/.test(s)) {
+        // Formats like 12-Aug-2024 or 12 Aug 24
+        const months: Record<string, number> = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+        const [dd, mon, yy] = s.replace(/\s+/g,' ').split(/[\s-]/);
+        const dnum = Number(dd);
+        const mnum = months[mon.slice(0,3).toLowerCase()];
+        let ynum = Number(yy);
+        if (ynum < 100) ynum = ynum < 70 ? 2000 + ynum : 1900 + ynum;
+        if (!isNaN(dnum) && mnum >= 0 && !isNaN(ynum)) {
+            date = new Date(Date.UTC(ynum, mnum, dnum));
+        }
+    } else {
+        const tmp = new Date(s);
+        date = isNaN(tmp.getTime()) ? null : tmp;
+    }
+    if (!date || isNaN(date.getTime())) return null;
+    const year = date.getUTCFullYear();
+    if (year < MIN_YEAR || year > MAX_YEAR) return null;
+    return date;
+};
+
+const normalizeIsoDateString = (dateString: string): string | null => {
+    const date = parseLooseDate(dateString);
+    if (!date) return null;
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
 const formatDate = (dateString: string) => {
-    if (!dateString) return '';
-    const date = new Date(dateString + 'T00:00:00Z');
+    const date = parseLooseDate(dateString);
+    if (!date) return '—';
     return new Intl.DateTimeFormat('he-IL', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+};
+
+const safeDateMs = (dateString: string): number => {
+    const d = parseLooseDate(dateString);
+    return d ? d.getTime() : 0;
+};
+
+// Excel helpers
+const excelSerialToIsoDate = (serial: number): string | null => {
+    if (typeof serial !== 'number' || !isFinite(serial)) return null;
+    // Excel's epoch (1900 system) starting at 1899-12-30 to account for the 1900 leap-year bug
+    const excelEpochMs = Date.UTC(1899, 11, 30);
+    const ms = excelEpochMs + Math.round(serial) * 24 * 60 * 60 * 1000;
+    const d = new Date(ms);
+    const y = d.getUTCFullYear();
+    if (y < MIN_YEAR || y > MAX_YEAR) return null;
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+};
+
+const normalizeExcelDateValue = (value: any): string | null => {
+    if (value == null || value === '') return null;
+    if (value instanceof Date) return normalizeIsoDateString(value.toISOString().slice(0,10));
+    if (typeof value === 'number') return excelSerialToIsoDate(value);
+    const text = String(value).trim();
+    // Numeric string that looks like a serial
+    if (/^\d{3,6}$/.test(text)) {
+        const n = Number(text);
+        const iso = excelSerialToIsoDate(n);
+        if (iso) return iso;
+    }
+    return normalizeIsoDateString(text);
 };
 
 const pnlClass = (pnl: number) => pnl >= 0 ? 'profit' : 'loss';
@@ -373,6 +465,8 @@ const App: React.FC = () => {
         commissionRate: 0.0008,
         additionalFee: 2.5,
         taxRate: 0.25,
+        minYear: MIN_YEAR,
+        maxYear: MAX_YEAR,
     });
     const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, content: '' });
     const [activePortfolioId, setActivePortfolioId] = useState<string>('default');
@@ -412,6 +506,7 @@ const App: React.FC = () => {
     // Simple cache for stock prices (5 minutes)
     const priceCache = useRef<Record<string, { price: number; timestamp: number }>>({});
     const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+    const importInputRef = useRef<HTMLInputElement | null>(null);
 
     // Auth management (lightweight): set user and load settings + handle share token
     useEffect(() => {
@@ -661,7 +756,7 @@ const App: React.FC = () => {
           quantity: Number(row.quantity || row['quantity'] || row['כמות'] || 0),
           total: Number(row.total || row['total'] || row['סך הכל'] || 0),
           commission: Number(row.commission || row['commission'] || row['עמלה'] || 0),
-          date: String(row.date || row['date'] || row['תאריך'] || ''),
+          date: normalizeExcelDateValue(row.date ?? row['date'] ?? row['תאריך']) || '',
         }));
         const sell: Transaction[] = sellRaw.map((row: any) => ({
           id: Number(row.id) || Date.now(),
@@ -670,7 +765,7 @@ const App: React.FC = () => {
           quantity: Number(row.quantity || row['quantity'] || row['כמות'] || 0),
           total: Number(row.total || row['total'] || row['סך הכל'] || 0),
           commission: Number(row.commission || row['commission'] || row['עמלה'] || 0),
-          date: String(row.date || row['date'] || row['תאריך'] || ''),
+          date: normalizeExcelDateValue(row.date ?? row['date'] ?? row['תאריך']) || '',
         }));
         const sett: Settings[] = settRaw.map((row: any) => ({
           minCommission: Number(row.minCommission || row['minCommission'] || row['עמלת מינימום'] || 0),
@@ -726,6 +821,8 @@ const App: React.FC = () => {
     const [sellDate, setSellDate] = useState<string>(new Date().toISOString().split('T')[0]);
     const [isBuyFormVisible, setIsBuyFormVisible] = useState(false);
     const [isFetchingPrice, setIsFetchingPrice] = useState<boolean>(false);
+    const [showBuyDateWarning, setShowBuyDateWarning] = useState<boolean>(false);
+    const [showSellDateWarning, setShowSellDateWarning] = useState<boolean>(false);
 
 
     // View-related state
@@ -763,10 +860,10 @@ const App: React.FC = () => {
 
         const buysForStock = buyTransactions
             .filter(t => t.stockName === stockName)
-            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+            .sort((a, b) => safeDateMs(a.date) - safeDateMs(b.date));
         const sellsForStock = sellTransactions
             .filter(t => t.stockName === stockName)
-            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+            .sort((a, b) => safeDateMs(a.date) - safeDateMs(b.date));
 
         const totalBuyQuantity = buysForStock.reduce((sum, t) => sum + t.quantity, 0);
         const totalSellQuantity = sellsForStock.reduce((sum, t) => sum + t.quantity, 0);
@@ -940,12 +1037,17 @@ const App: React.FC = () => {
         const price = parseFloat(buyPrice);
         const quantity = parseInt(buyQuantity, 10);
 
-        if (!stockName || isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0 || !buyDate) return;
+        const normalizedDate = normalizeIsoDateString(buyDate);
+        setShowBuyDateWarning(!normalizedDate);
+        if (!stockName || isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0 || !normalizedDate) {
+            if (!normalizedDate) setShowBuyDateWarning(true);
+            return;
+        }
 
         const total = price * quantity;
         const commission = calculateCommission(total);
         
-        const newTx: Transaction = { id: editingId || Date.now(), stockName, price, quantity, total, commission, date: buyDate };
+        const newTx: Transaction = { id: editingId || Date.now(), stockName, price, quantity, total, commission, date: normalizedDate };
         setBuyTransactions(prev => {
             const exists = prev.some(t => t.id === newTx.id);
             return exists ? prev.map(t => (t.id === newTx.id ? newTx : t)) : [...prev, newTx];
@@ -978,11 +1080,16 @@ const App: React.FC = () => {
         if (!activeStock) return;
         const price = parseFloat(sellPrice);
         const quantity = parseInt(sellQuantity, 10);
-        if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0 || quantity > activeStockSummary.remainingQuantity) return;
+        const normalizedDate = normalizeIsoDateString(sellDate);
+        setShowSellDateWarning(!normalizedDate);
+        if (isNaN(price) || isNaN(quantity) || price <= 0 || quantity <= 0 || quantity > activeStockSummary.remainingQuantity || !normalizedDate) {
+            if (!normalizedDate) setShowSellDateWarning(true);
+            return;
+        }
     
         const total = price * quantity;
         const commission = calculateCommission(total);
-        const newTransaction: Transaction = { id: Date.now(), stockName: activeStock, price, quantity, total, commission, date: sellDate };
+        const newTransaction: Transaction = { id: Date.now(), stockName: activeStock, price, quantity, total, commission, date: normalizedDate };
     
         setSellTransactions(prev => [...prev, newTransaction]);
         if (user) { void upsertTransaction(user.uid, activePortfolioId, 'sell', newTransaction as any); }
@@ -1529,7 +1636,18 @@ const App: React.FC = () => {
                  </div>
              </div>
             <div className="form-group"><label htmlFor="buy-quantity">כמות מניות</label><input id="buy-quantity" type="number" value={buyQuantity} onChange={e => setBuyQuantity(e.target.value)} /></div>
-            <div className="form-group"><label htmlFor="buy-date">תאריך</label><input id="buy-date" className="date-input" type="date" value={buyDate} onChange={e => setBuyDate(e.target.value)} /></div>
+            <div className="form-group">
+                <label htmlFor="buy-date">תאריך</label>
+                <input
+                    id="buy-date"
+                    className={`date-input ${normalizeIsoDateString(buyDate) ? '' : 'invalid-input'}`}
+                    type="date"
+                    min={`${String(settings.minYear ?? MIN_YEAR).padStart(4,'0')}-01-01`}
+                    max={`${String(settings.maxYear ?? MAX_YEAR).padStart(4,'0')}-12-31`}
+                    value={buyDate}
+                    onChange={e => setBuyDate(e.target.value)}
+                />
+            </div>
             <button onClick={handleSaveBuy} disabled={!buyPrice || !buyQuantity || !buyDate}><PlusIcon/> הוסף קנייה</button>
         </div>
     ); };
@@ -1540,7 +1658,7 @@ const App: React.FC = () => {
 
         const isInSelectedRange = (dateString: string) => {
             if (dateRange === 'all') return true;
-            const d = new Date(dateString);
+            const d = parseLooseDate(dateString) ?? new Date(0);
             const now = new Date();
             const start = new Date(now);
             if (dateRange === 'week') start.setDate(now.getDate() - 7);
@@ -1549,7 +1667,7 @@ const App: React.FC = () => {
             if (dateRange === 'year') start.setFullYear(now.getFullYear() - 1);
             if (dateRange === 'custom') {
                 if (!customStart && !customEnd) return true;
-                const s = customStart ? new Date(customStart) : new Date('1970-01-01');
+                const s = customStart ? new Date(customStart) : new Date('1900-01-01');
                 const e = customEnd ? new Date(customEnd) : now;
                 return d >= s && d <= e;
             }
@@ -1563,7 +1681,7 @@ const App: React.FC = () => {
         type BuyLotDetail = { id: number; remaining: number; costBasisPerShare: number; pricePerShare: number; date: string };
         const buysSorted: BuyLotDetail[] = buysFiltered
             .slice()
-            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+            .sort((a, b) => safeDateMs(a.date) - safeDateMs(b.date))
             .map(b => ({
                 id: b.id,
                 remaining: b.quantity,
@@ -1574,7 +1692,7 @@ const App: React.FC = () => {
 
         const sellsSorted = sellsFiltered
             .slice()
-            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+            .sort((a, b) => safeDateMs(a.date) - safeDateMs(b.date));
 
         const perSellRealized = sellsSorted.map(s => {
             let qtyToMatch = s.quantity;
@@ -1620,7 +1738,7 @@ const App: React.FC = () => {
             })
             .filter(t => {
                 if (dateRange === 'all') return true;
-                const d = new Date(t.date);
+                const d = parseLooseDate(t.date) ?? new Date(0);
                 const now = new Date();
                 const start = new Date(now);
                 if (dateRange === 'week') start.setDate(now.getDate() - 7);
@@ -1629,7 +1747,7 @@ const App: React.FC = () => {
                 if (dateRange === 'year') start.setFullYear(now.getFullYear() - 1);
                 if (dateRange === 'custom') {
                     if (!customStart && !customEnd) return true;
-                    const s = customStart ? new Date(customStart) : new Date('1970-01-01');
+                    const s = customStart ? new Date(customStart) : new Date('1900-01-01');
                     const e = customEnd ? new Date(customEnd) : now;
                     return d >= s && d <= e;
                 }
@@ -1716,9 +1834,9 @@ const App: React.FC = () => {
                             </div>
                         <div className="date-range-fields">
                             <label htmlFor="custom-start">מ:</label>
-                            <input id="custom-start" type="date" className="date-input" value={customStart} onChange={e=>{ setCustomStart(e.target.value); setDateRange('custom'); }} />
+                            <input id="custom-start" type="date" className="date-input" min={`${String(settings.minYear ?? MIN_YEAR).padStart(4,'0')}-01-01`} max={`${String(settings.maxYear ?? MAX_YEAR).padStart(4,'0')}-12-31`} value={customStart} onChange={e=>{ setCustomStart(e.target.value); setDateRange('custom'); }} />
                             <label htmlFor="custom-end">עד:</label>
-                            <input id="custom-end" type="date" className="date-input" value={customEnd} onChange={e=>{ setCustomEnd(e.target.value); setDateRange('custom'); }} />
+                            <input id="custom-end" type="date" className="date-input" min={`${String(settings.minYear ?? MIN_YEAR).padStart(4,'0')}-01-01`} max={`${String(settings.maxYear ?? MAX_YEAR).padStart(4,'0')}-12-31`} value={customEnd} onChange={e=>{ setCustomEnd(e.target.value); setDateRange('custom'); }} />
                         </div>
                     </div>
                 </div>
@@ -1736,7 +1854,7 @@ const App: React.FC = () => {
 
                       {renderBuyMoreForm()}
                      
-                     {showBuyTable && buysVisibleRows.length > 0 && (
+                      {showBuyTable && buysVisibleRows.length > 0 && (
                         <div className="transactions-list">
                             <table className="transactions-table">
                                 <thead><tr><th>תאריך</th><th>שער קניה</th><th>כמות</th><th>שווי אחזקה</th><th>עמלה</th><th>רווח נוכחי</th><th>אחוז תשואה</th><th>פעולות</th></tr></thead>
@@ -1804,9 +1922,14 @@ const App: React.FC = () => {
                                                 <td></td>
                                             </tr>
                                         );
-                                     })()}
+                                      })()}
                                 </tbody>
                             </table>
+                            {showBuyDateWarning && (
+                              <div className="table-warning" role="alert">
+                                * נמצאו תאריכים לא תקינים בטבלה זו. תקף פורמט YYYY-MM-DD ובטווח 1900–2200. נא לתקן את השדות המסומנים באדום.
+                              </div>
+                            )}
                         </div>
                      )}
                      {buysForActiveStock.length === 0 && !isBuyFormVisible && (
@@ -1832,7 +1955,18 @@ const App: React.FC = () => {
                                 </button>
                             </div>
                         </div>
-                        <div className="form-group"><label htmlFor="sell-date">תאריך</label><input id="sell-date" className="date-input" type="date" value={sellDate} onChange={e => setSellDate(e.target.value)} /></div>
+                        <div className="form-group">
+                            <label htmlFor="sell-date">תאריך</label>
+                            <input
+                                id="sell-date"
+                                className={`date-input ${normalizeIsoDateString(sellDate) ? '' : 'invalid-input'}`}
+                                type="date"
+                                min={`${String(settings.minYear ?? MIN_YEAR).padStart(4,'0')}-01-01`}
+                                max={`${String(settings.maxYear ?? MAX_YEAR).padStart(4,'0')}-12-31`}
+                                value={sellDate}
+                                onChange={e => setSellDate(e.target.value)}
+                            />
+                        </div>
                         <button onClick={handleAddSell} disabled={!sellPrice || !sellQuantity || activeStockSummary.remainingQuantity <= 0 || parseInt(sellQuantity, 10) > activeStockSummary.remainingQuantity}><PlusIcon/> הוסף מכירה</button>
                     </div>
                     {showSellTable && sellsForActiveStock.length > 0 && <div className="transactions-list">
@@ -1869,6 +2003,11 @@ const App: React.FC = () => {
                                 )}
                             </tbody>
                         </table>
+                        {showSellDateWarning && (
+                          <div className="table-warning" role="alert">
+                            * נמצאו תאריכים לא תקינים בטבלה זו. תקף פורמט YYYY-MM-DD ובטווח 1900–2200. נא לתקן את השדות המסומנים באדום.
+                          </div>
+                        )}
                     </div>}
                 </div>
             </>
@@ -1927,7 +2066,7 @@ const App: React.FC = () => {
       const sells = [...sellTransactions].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
       let cum = 0;
       const points: Array<{ x: number; y: number }> = [];
-      for (const s of sells) {
+        for (const s of sells) {
         const date = new Date(s.date);
         const realizedNet = Number(((s as any).realizedNet) ?? 0);
         cum += realizedNet;
@@ -1950,18 +2089,19 @@ const App: React.FC = () => {
     const computeMonthlyHeatmap = useCallback((monthsBack: number = 12) => {
       // Aggregate realized net PnL by year-month from sell transactions
       const map = new Map<string, number>();
-      for (const s of sellTransactions) {
-        const d = new Date(s.date);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        for (const s of sellTransactions) {
+        const d = parseLooseDate(s.date);
+        if (!d) continue;
+        const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
         const realizedNet = Number(((s as any).realizedNet) ?? 0);
         map.set(key, (map.get(key) || 0) + realizedNet);
       }
       const now = new Date();
       const out: Array<{ key: string; label: string; value: number }> = [];
       for (let i = monthsBack - 1; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-        const label = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getFullYear()).slice(-2)}`;
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+        const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+        const label = `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCFullYear()).slice(-2)}`;
         out.push({ key, label, value: map.get(key) || 0 });
       }
       return out;
@@ -2000,7 +2140,7 @@ const App: React.FC = () => {
             if (lot.remaining <= 0) continue;
             const take = Math.min(lot.remaining, qtyToMatch);
             allocatedCost += take * lot.costBasisPerShare;
-            weightedBuyDateMs += take * new Date(lot.date).getTime();
+            weightedBuyDateMs += take * safeDateMs(lot.date);
             lot.remaining -= take;
             qtyToMatch -= take;
             matchedQty += take;
@@ -2011,7 +2151,7 @@ const App: React.FC = () => {
           let holdingDays = 0;
           if (matchedQty > 0) {
             const avgBuyTime = weightedBuyDateMs / matchedQty;
-            holdingDays = Math.max(0, Math.round((new Date(s.date).getTime() - avgBuyTime) / (1000 * 60 * 60 * 24)));
+            holdingDays = Math.max(0, Math.round((safeDateMs(s.date) - avgBuyTime) / (1000 * 60 * 60 * 24)));
           }
           results.push({ stock, date: s.date, realizedNet, realizedPercent, holdingDays });
         }
@@ -2696,15 +2836,14 @@ const App: React.FC = () => {
     };
 
     const renderSettingsPage = () => {
+        const minYearStr = String(settings.minYear ?? MIN_YEAR).padStart(4, '0');
+        const maxYearStr = String(settings.maxYear ?? MAX_YEAR).padStart(4, '0');
         return (
             <div className="settings-page">
+                {/* כללי */}
                 <div className="card">
-                    <h2>הגדרות וכלים</h2>
+                    <h2>כללי</h2>
                     <div className="form-grid">
-                        <div className="form-group"><label>עמלת מינימום ($)</label><input type="number" name="minCommission" value={settings.minCommission} onChange={handleSettingsChange}/></div>
-                        <div className="form-group"><label>שיעור עמלה (%)</label><input type="number" name="commissionRate" value={settings.commissionRate * 100} onChange={handleSettingsChange}/></div>
-                        <div className="form-group"><label>עמלה נוספת ($)</label><input type="number" name="additionalFee" value={settings.additionalFee} onChange={handleSettingsChange}/></div>
-                        <div className="form-group"><label>שיעור מס רווחי הון (%)</label><input type="number" name="taxRate" value={settings.taxRate * 100} onChange={handleSettingsChange}/></div>
                         <div className="form-group">
                             <label>ערכת צבע</label>
                             <select value={isDarkTheme ? 'dark' : 'light'} onChange={(e) => setIsDarkTheme(e.target.value === 'dark')}>
@@ -2713,6 +2852,32 @@ const App: React.FC = () => {
                             </select>
                         </div>
                     </div>
+                </div>
+
+                {/* עמלות ומס */}
+                <div className="card">
+                    <h2>עמלות ומס</h2>
+                    <div className="form-grid">
+                        <div className="form-group"><label>עמלת מינימום ($)</label><input type="number" name="minCommission" value={settings.minCommission} onChange={handleSettingsChange}/></div>
+                        <div className="form-group"><label>שיעור עמלה (%)</label><input type="number" name="commissionRate" value={settings.commissionRate * 100} onChange={handleSettingsChange}/></div>
+                        <div className="form-group"><label>עמלה נוספת ($)</label><input type="number" name="additionalFee" value={settings.additionalFee} onChange={handleSettingsChange}/></div>
+                        <div className="form-group"><label>שיעור מס רווחי הון (%)</label><input type="number" name="taxRate" value={settings.taxRate * 100} onChange={handleSettingsChange}/></div>
+                    </div>
+                </div>
+
+                {/* טווח תאריכים */}
+                <div className="card">
+                    <h2>טווח תאריכים</h2>
+                    <div className="form-grid">
+                        <div className="form-group"><label>שנת מינימום</label><input type="number" name="minYear" value={settings.minYear ?? MIN_YEAR} onChange={(e)=>{ const v = parseInt(e.target.value || '0', 10); setSettings(prev=>({ ...prev, minYear: isNaN(v) ? MIN_YEAR : v })); }}/></div>
+                        <div className="form-group"><label>שנת מקסימום</label><input type="number" name="maxYear" value={settings.maxYear ?? MAX_YEAR} onChange={(e)=>{ const v = parseInt(e.target.value || '0', 10); setSettings(prev=>({ ...prev, maxYear: isNaN(v) ? MAX_YEAR : v })); }}/></div>
+                        <div className="form-group"><label>תצוגת טווח פעיל</label><input type="text" readOnly value={`${minYearStr}-01-01 → ${maxYearStr}-12-31`} /></div>
+                    </div>
+                </div>
+
+                {/* ייבוא/ייצוא וכלים */}
+                <div className="card">
+                    <h2>ייבוא/ייצוא וכלים</h2>
                     <div className="settings-actions-header">
                         <button onClick={handleManualSave} title="שמור תיק" className="btn-save-inline">
                             <SaveIcon color="#34c759" />
@@ -2721,51 +2886,51 @@ const App: React.FC = () => {
                             <svg width="18" height="18" fill="#0070c0" viewBox="0 0 16 16"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">X</text></svg>
                         </button>
                         <label className="btn-export-inline" title="ייבוא מאקסל">
-                            <input type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImportFromExcel} />
+                            <input ref={importInputRef as any} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImportFromExcel} />
                             <svg width="18" height="18" fill="#0070c0" viewBox="0 0 16 16"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">⇧</text></svg>
                         </label>
                     </div>
                     {showMigration && (<>
-                    <div className="divider" style={{ margin: '16px 0', borderTop: '1px solid var(--border-color)' }} />
-                    <div className="migrations">
-                        <h3>הסבת נתונים ל-Cloud Firestore</h3>
-                        <p>העברת הטרנזקציות מהמבנה הישן (מערכים במסמך משתמש) למבנה החדש (תתי-אוספים). הפעלה חד-פעמית למשתמש הנוכחי.</p>
-                        <button
-                          className="btn"
-                          onClick={async () => {
-                            try {
-                              if (!user) return;
-                              const legacy = await getUserData(user.uid);
-                              const legacyBuys = legacy?.buyTransactions || [];
-                              const legacySells = legacy?.sellTransactions || [];
-                              if (legacyBuys.length === 0 && legacySells.length === 0) {
-                                setModal({ title: 'מידע', message: 'לא נמצאו טרנזקציות להסבה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
-                                return;
-                              }
-                              setModal({
-                                title: 'אישור הסבה',
-                                message: `יימחק הצורך במערכים במסמך המשתמש ויועברו ${legacyBuys.length} קניות ו-${legacySells.length} מכירות לתת-אוספים. האם להמשיך?`,
-                                actions: [
-                                  { label: 'בטל', value: 'cancel' },
-                                  { label: 'המשך', value: 'ok', variant: 'primary' }
-                                ],
-                                onClose: async (v) => {
-                                  setModal(null);
-                                  if (v !== 'ok') return;
-                                  const { bulkImportTransactions } = await import('./data/transactions');
-                                  await bulkImportTransactions(user.uid, activePortfolioId, 'buy', legacyBuys as any);
-                                  await bulkImportTransactions(user.uid, activePortfolioId, 'sell', legacySells as any);
-                                  setModal({ title: 'הצלחה', message: 'ההסבה הסתיימה בהצלחה! הנתונים יוצגו בזמן אמת מהמבנה החדש.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
-                                  setShowMigration(false);
+                        <div className="divider" style={{ margin: '16px 0', borderTop: '1px solid var(--border-color)' }} />
+                        <div className="migrations">
+                            <h3>הסבת נתונים ל-Cloud Firestore</h3>
+                            <p>העברת הטרנזקציות מהמבנה הישן (מערכים במסמך משתמש) למבנה החדש (תתי-אוספים). הפעלה חד-פעמית למשתמש הנוכחי.</p>
+                            <button
+                              className="btn"
+                              onClick={async () => {
+                                try {
+                                  if (!user) return;
+                                  const legacy = await getUserData(user.uid);
+                                  const legacyBuys = legacy?.buyTransactions || [];
+                                  const legacySells = legacy?.sellTransactions || [];
+                                  if (legacyBuys.length === 0 && legacySells.length === 0) {
+                                    setModal({ title: 'מידע', message: 'לא נמצאו טרנזקציות להסבה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                                    return;
+                                  }
+                                  setModal({
+                                    title: 'אישור הסבה',
+                                    message: `יימחק הצורך במערכים במסמך המשתמש ויועברו ${legacyBuys.length} קניות ו-${legacySells.length} מכירות לתת-אוספים. האם להמשיך?`,
+                                    actions: [
+                                      { label: 'בטל', value: 'cancel' },
+                                      { label: 'המשך', value: 'ok', variant: 'primary' }
+                                    ],
+                                    onClose: async (v) => {
+                                      setModal(null);
+                                      if (v !== 'ok') return;
+                                      const { bulkImportTransactions } = await import('./data/transactions');
+                                      await bulkImportTransactions(user.uid, activePortfolioId, 'buy', legacyBuys as any);
+                                      await bulkImportTransactions(user.uid, activePortfolioId, 'sell', legacySells as any);
+                                      setModal({ title: 'הצלחה', message: 'ההסבה הסתיימה בהצלחה! הנתונים יוצגו בזמן אמת מהמבנה החדש.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                                      setShowMigration(false);
+                                    }
+                                  });
+                                } catch (e) {
+                                  console.error('Migration failed', e);
+                                  setModal({ title: 'שגיאה', message: 'שגיאה בהסבה. נסה שוב.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
                                 }
-                              });
-                            } catch (e) {
-                              console.error('Migration failed', e);
-                              setModal({ title: 'שגיאה', message: 'שגיאה בהסבה. נסה שוב.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
-                            }
-                          }}
-                        >הסב נתונים למבנה החדש</button>
-                    </div>
+                              }}
+                            >הסב נתונים למבנה החדש</button>
+                        </div>
                     </>)}
                 </div>
             </div>
