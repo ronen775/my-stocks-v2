@@ -1,0 +1,119 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Load combined env variables (optional)
+        run: |
+          set -e
+          if [ -n "${ENVIRONMENTS_VARIABLES}" ]; then
+            printf "%s\n" "$ENVIRONMENTS_VARIABLES" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${FIREBASE_VARIABLE}" ]; then
+            printf "%s\n" "$FIREBASE_VARIABLE" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${ENVIRONMENTS_SECRETS}" ]; then
+            printf "%s\n" "$ENVIRONMENTS_SECRETS" >> "$GITHUB_ENV"
+          fi
+        shell: bash
+        env:
+          ENVIRONMENTS_VARIABLES: ${{ vars.ENVIRONMENTS_VARIABLES || secrets.ENVIRONMENTS_VARIABLES }}
+          FIREBASE_VARIABLE: ${{ vars.FIREBASE_VARIABLE || secrets.FIREBASE_VARIABLE }}
+          ENVIRONMENTS_SECRETS: ${{ vars.ENVIRONMENTS_SECRETS || secrets.ENVIRONMENTS_SECRETS }}
+      - name: Print env source (debug)
+        run: |
+          echo "Has secrets?" ${{ secrets.VITE_FIREBASE_API_KEY != '' || secrets.VITE_FIREBASE_AUTH_DOMAIN != '' || secrets.VITE_FIREBASE_PROJECT_ID != '' || secrets.VITE_FIREBASE_STORAGE_BUCKET != '' || secrets.VITE_FIREBASE_MESSAGING_SENDER_ID != '' || secrets.VITE_FIREBASE_APP_ID != '' }}
+          echo "Has vars?" ${{ vars.VITE_FIREBASE_API_KEY != '' || vars.VITE_FIREBASE_AUTH_DOMAIN != '' || vars.VITE_FIREBASE_PROJECT_ID != '' || vars.VITE_FIREBASE_STORAGE_BUCKET != '' || vars.VITE_FIREBASE_MESSAGING_SENDER_ID != '' || vars.VITE_FIREBASE_APP_ID != '' }}
+          echo "Has combined (ENVIRONMENTS_VARIABLES|FIREBASE_VARIABLE|ENVIRONMENTS_SECRETS)?" ${{ (vars.ENVIRONMENTS_VARIABLES != '' || secrets.ENVIRONMENTS_VARIABLES != '' || vars.FIREBASE_VARIABLE != '' || secrets.FIREBASE_VARIABLE != '' || vars.ENVIRONMENTS_SECRETS != '' || secrets.ENVIRONMENTS_SECRETS != '') }}
+          env | grep '^VITE_FIREBASE_' || true
+        shell: bash
+      - name: Verify Firebase secrets
+        run: |
+          set -e
+          check() { var="$1"; if [ -z "${!var}" ]; then echo "Missing $var"; exit 1; else echo "$var OK"; fi; }
+          check VITE_FIREBASE_API_KEY
+          check VITE_FIREBASE_AUTH_DOMAIN
+          check VITE_FIREBASE_PROJECT_ID
+          check VITE_FIREBASE_STORAGE_BUCKET
+          check VITE_FIREBASE_MESSAGING_SENDER_ID
+          check VITE_FIREBASE_APP_ID
+        shell: bash
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY || vars.VITE_FIREBASE_API_KEY || env.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN || vars.VITE_FIREBASE_AUTH_DOMAIN || env.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID || vars.VITE_FIREBASE_PROJECT_ID || env.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET || vars.VITE_FIREBASE_STORAGE_BUCKET || env.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID || vars.VITE_FIREBASE_MESSAGING_SENDER_ID || env.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID || vars.VITE_FIREBASE_APP_ID || env.VITE_FIREBASE_APP_ID }}
+      - name: Build
+        run: npm run build
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY || vars.VITE_FIREBASE_API_KEY || env.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN || vars.VITE_FIREBASE_AUTH_DOMAIN || env.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID || vars.VITE_FIREBASE_PROJECT_ID || env.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET || vars.VITE_FIREBASE_STORAGE_BUCKET || env.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID || vars.VITE_FIREBASE_MESSAGING_SENDER_ID || env.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID || vars.VITE_FIREBASE_APP_ID || env.VITE_FIREBASE_APP_ID }}
+      - name: Assert Vite transformed entry (no .tsx in dist/index.html)
+        run: |
+          if grep -q "index.tsx" dist/index.html; then
+            echo "dist/index.html still references index.tsx – build/transform failed"; exit 1;
+          fi
+          echo "dist/index.html looks good";
+      - name: Show first 40 lines of built index.html
+        run: |
+          sed -n '1,40p' dist/index.html | sed -e 's/.*/&/'
+      - name: Add SPA fallback (404.html)
+        run: cp dist/index.html dist/404.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  deploy_branch:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download built artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          path: dist
+      - name: Publish to gh-pages branch (fallback)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dist
+          publish_branch: gh-pages
+

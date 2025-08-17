@@ -1,0 +1,9 @@
+name = "symbols-worker"
+main = "symbols-worker.ts"
+compatibility_date = "2024-01-01"
+account_id = "26a42251006001f50bd153a1d162403d"
+
+# You can bind a custom route later or keep the default workers.dev subdomain
+# routes = [ ]
+
+
