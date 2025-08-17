@@ -234,6 +234,7 @@ interface Settings {
     minYear?: number;
     maxYear?: number;
     sheetsSpreadsheetId?: string;
+    polygonApiKey?: string;
 }
 
 interface StockSummary {
@@ -243,10 +244,20 @@ interface StockSummary {
     weightedAvgBuyPrice: number; // Pure price average
     weightedAvgCostBasis: number; // Price + commission average
     totalBuyCost: number;
+    totalBuyValue: number; // Total buy value without commissions
+    totalSellValue: number; // Total value of sales
     totalCommissions: number;
     realizedGrossPnl: number;
     realizedNetPnl: number;
     roi: number;
+}
+
+interface Dividend {
+    date: string;
+    exDate: string;
+    amount: number;
+    type: 'regular' | 'special' | 'liquidating';
+    frequency?: 'monthly' | 'quarterly' | 'semi-annual' | 'annual';
 }
 
 interface TooltipState {
@@ -330,6 +341,30 @@ const safeDateMs = (dateString: string): number => {
     const d = parseLooseDate(dateString);
     return d ? d.getTime() : 0;
 };
+
+// --- Google API helper ---
+async function googleApiRequest<T = any>(url: string, options: { method?: string; body?: any; token: string }): Promise<{ ok: boolean; data: T | null; errorText?: string }>{
+    try {
+        const resp = await fetch(url, {
+            method: options.method || 'GET',
+            headers: {
+                'Authorization': `Bearer ${options.token}`,
+                'Content-Type': 'application/json'
+            },
+            body: options.body ? JSON.stringify(options.body) : undefined
+        });
+        const text = await resp.text();
+        let json: any = null;
+        try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+        if (!resp.ok) {
+            const msg = json?.error?.message || json?.message || text || `HTTP ${resp.status}`;
+            return { ok: false, data: null, errorText: msg };
+        }
+        return { ok: true, data: json as T };
+    } catch (e: any) {
+        return { ok: false, data: null, errorText: e?.message || 'Network error' };
+    }
+}
 
 // Excel helpers
 const excelSerialToIsoDate = (serial: number): string | null => {
@@ -468,7 +503,8 @@ const App: React.FC = () => {
         taxRate: 0.25,
         minYear: MIN_YEAR,
         maxYear: MAX_YEAR,
-        sheetsSpreadsheetId: ''
+        sheetsSpreadsheetId: '',
+        polygonApiKey: '8pT3Kh9Npf_8Q5gn6dI2fN6p_8YuWQSH'
     });
     const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, y: 0, content: '' });
     const [activePortfolioId, setActivePortfolioId] = useState<string>('default');
@@ -481,9 +517,16 @@ const App: React.FC = () => {
     const [showMigration, setShowMigration] = useState<boolean>(false);
     const [currentStockPrices, setCurrentStockPrices] = useState<Record<string, number>>({});
     const [isFetchingCurrentPrices, setIsFetchingCurrentPrices] = useState<boolean>(false);
+    
+    // Dividend data
+    const [stockDividends, setStockDividends] = useState<Record<string, Dividend[]>>({});
+    const [isLoadingDividends, setIsLoadingDividends] = useState<Record<string, boolean>>({});
+    const [lastDividendUpdate, setLastDividendUpdate] = useState<Record<string, number>>({});
+    
     // Collapsible tables in stock detail view
     const [showBuyTable, setShowBuyTable] = useState<boolean>(true);
     const [showSellTable, setShowSellTable] = useState<boolean>(true);
+    const [showDividendsTable, setShowDividendsTable] = useState<boolean>(false);
     const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
     const [modal, setModal] = useState<
       | null
@@ -508,7 +551,201 @@ const App: React.FC = () => {
     // Simple cache for stock prices (5 minutes)
     const priceCache = useRef<Record<string, { price: number; timestamp: number }>>({});
     const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+    
+    // Dividend cache (24 hours)
+    const DIVIDEND_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
     const importInputRef = useRef<HTMLInputElement | null>(null);
+  // Sheets: simple helpers
+  const createSheetsTemplate = useCallback(async (token: string): Promise<string | null> => {
+    const create = await googleApiRequest<any>('https://sheets.googleapis.com/v4/spreadsheets', {
+      method: 'POST',
+      token,
+      body: {
+        properties: { title: 'Stock Calculator - Template' },
+        sheets: [
+          { properties: { title: 'קניות' } },
+          { properties: { title: 'מכירות' } },
+          { properties: { title: 'הגדרות' } },
+        ],
+      },
+    });
+    if (!create.ok || !create.data?.spreadsheetId) return null;
+    const sid = create.data.spreadsheetId as string;
+    const values = {
+      valueInputOption: 'RAW',
+      data: [
+        { range: 'קניות!A1:G1', values: [['id','stockName','price','quantity','total','commission','date']] },
+        { range: 'מכירות!A1:G1', values: [['id','stockName','price','quantity','total','commission','date']] },
+        { range: 'הגדרות!A1:D1', values: [['minCommission','commissionRate','additionalFee','taxRate']] },
+      ],
+    } as any;
+    const write = await googleApiRequest<any>(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values:batchUpdate`, { method: 'POST', token, body: values });
+    if (!write.ok) return null;
+    return sid;
+  }, []);
+
+  const exportToSheets = useCallback(async (token: string, spreadsheetId: string) => {
+    // build rows
+    const buyRows = buyTransactions.map(t => [t.id, t.stockName, t.price, t.quantity, t.total, t.commission, t.date]);
+    const sellRows = sellTransactions.map(t => [t.id, t.stockName, t.price, t.quantity, t.total, t.commission, t.date]);
+    const settRow = [settings.minCommission, settings.commissionRate, settings.additionalFee, settings.taxRate];
+    const payload = {
+      valueInputOption: 'RAW',
+      data: [
+        { range: 'קניות!A1', values: [['id','stockName','price','quantity','total','commission','date'], ...buyRows] },
+        { range: 'מכירות!A1', values: [['id','stockName','price','quantity','total','commission','date'], ...sellRows] },
+        { range: 'הגדרות!A1', values: [['minCommission','commissionRate','additionalFee','taxRate'], settRow] },
+      ],
+    } as any;
+    const res = await googleApiRequest<any>(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`, { method: 'POST', token, body: payload });
+    return res.ok;
+  }, [buyTransactions, sellTransactions, settings]);
+
+  const importFromSheets = useCallback(async (token: string, spreadsheetId: string) => {
+    const ranges = ['קניות!A2:G100000', 'מכירות!A2:G100000', 'הגדרות!A2:D2'];
+    const res = await googleApiRequest<any>(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?ranges=${encodeURIComponent(ranges[0])}&ranges=${encodeURIComponent(ranges[1])}&ranges=${encodeURIComponent(ranges[2])}`, { method: 'GET', token });
+    if (!res.ok) throw new Error(res.errorText || 'read failed');
+    const valueRanges: Array<{ range: string; values: any[][] }> = res.data?.valueRanges || [];
+    const get = (title: string) => valueRanges.find(v => v.range?.includes(title))?.values || [];
+    const buys = get('קניות').filter(r => r.length >= 7).map(r => ({ id: Number(r[0]), stockName: String(r[1]||''), price: Number(r[2]||0), quantity: Number(r[3]||0), total: Number(r[4]||0), commission: Number(r[5]||0), date: String(r[6]||'') })) as Transaction[];
+    const sells = get('מכירות').filter(r => r.length >= 7).map(r => ({ id: Number(r[0]), stockName: String(r[1]||''), price: Number(r[2]||0), quantity: Number(r[3]||0), total: Number(r[4]||0), commission: Number(r[5]||0), date: String(r[6]||'') })) as Transaction[];
+    const sett = get('הגדרות')[0];
+    if (buys.length) setBuyTransactions(buys);
+    if (sells.length) setSellTransactions(sells);
+    if (sett && sett.length >= 4) setSettings(prev => ({ ...prev, minCommission: Number(sett[0]||0), commissionRate: Number(sett[1]||0), additionalFee: Number(sett[2]||0), taxRate: Number(sett[3]||0) }));
+  }, []);
+
+  // Fetch dividends from Polygon.io API
+  const fetchStockDividends = useCallback(async (stockSymbol: string) => {
+    if (!settings.polygonApiKey) {
+      console.warn('No Polygon API key configured');
+      return;
+    }
+
+    // Check if we need to update (24 hour cache)
+    const now = Date.now();
+    const lastUpdate = lastDividendUpdate[stockSymbol] || 0;
+    if (now - lastUpdate < DIVIDEND_CACHE_DURATION) {
+      console.log(`Dividends for ${stockSymbol} are still fresh, skipping update`);
+      return;
+    }
+
+    setIsLoadingDividends(prev => ({ ...prev, [stockSymbol]: true }));
+    
+    try {
+      // Get current year and previous year for comprehensive data
+      const currentYear = new Date().getFullYear();
+      const fromDate = `${currentYear - 2}-01-01`;
+      const toDate = `${currentYear + 1}-12-31`;
+      
+      const response = await fetch(
+        `https://api.polygon.io/v3/reference/dividends?ticker=${stockSymbol}&ex_dividend_date.gte=${fromDate}&ex_dividend_date.lte=${toDate}&apiKey=${settings.polygonApiKey}`
+      );
+      
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('API key לא תקין - אנא בדוק את המפתח שלך');
+        } else if (response.status === 429) {
+          throw new Error('חרגת ממגבלת הבקשות - נסה שוב מאוחר יותר');
+        } else if (response.status === 500) {
+          throw new Error('שגיאת שרת - נסה שוב מאוחר יותר');
+        } else {
+          throw new Error(`שגיאת HTTP: ${response.status}`);
+        }
+      }
+      
+      const data = await response.json();
+      
+      if (data.results) {
+        const dividends: Dividend[] = data.results.map((item: any) => ({
+          date: item.pay_date || item.ex_dividend_date,
+          exDate: item.ex_dividend_date,
+          amount: item.cash_amount || 0,
+          type: item.type || 'regular',
+          frequency: item.frequency || 'quarterly'
+        }));
+        
+        // Sort by date (newest first)
+        dividends.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        
+        setStockDividends(prev => ({ ...prev, [stockSymbol]: dividends }));
+        setLastDividendUpdate(prev => ({ ...prev, [stockSymbol]: now }));
+        
+        // Show success message if dividends were found
+        if (dividends.length > 0) {
+          console.log(`Successfully loaded ${dividends.length} dividends for ${stockSymbol}`);
+          // Check for upcoming dividends after loading
+          setTimeout(() => checkUpcomingDividends(), 100);
+        } else {
+          console.log(`No dividends found for ${stockSymbol}`);
+        }
+      } else if (data.error) {
+        throw new Error(`API Error: ${data.error}`);
+      } else {
+        console.log(`No dividend data available for ${stockSymbol}`);
+        setStockDividends(prev => ({ ...prev, [stockSymbol]: [] }));
+        setLastDividendUpdate(prev => ({ ...prev, [stockSymbol]: now }));
+      }
+    } catch (error) {
+      console.error(`Error fetching dividends for ${stockSymbol}:`, error);
+      // Set empty dividends array to prevent repeated failed attempts
+      setStockDividends(prev => ({ ...prev, [stockSymbol]: [] }));
+      setLastDividendUpdate(prev => ({ ...prev, [stockSymbol]: now }));
+    } finally {
+      setIsLoadingDividends(prev => ({ ...prev, [stockSymbol]: false }));
+    }
+  }, [settings.polygonApiKey, lastDividendUpdate]);
+
+  // Auto-fetch dividends when opening stock detail (once per day)
+  const ensureDividendsLoaded = useCallback((stockSymbol: string) => {
+    const now = Date.now();
+    const lastUpdate = lastDividendUpdate[stockSymbol] || 0;
+    
+    if (now - lastUpdate >= DIVIDEND_CACHE_DURATION) {
+      fetchStockDividends(stockSymbol);
+    }
+  }, [fetchStockDividends, lastDividendUpdate]);
+
+
+
+
+
+  // Check for upcoming dividend payments and show notifications
+  const checkUpcomingDividends = useCallback(() => {
+    const now = new Date();
+    const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // Next 7 days
+    
+    let hasUpcomingDividends = false;
+    let upcomingDividendsList: string[] = [];
+    
+    for (const [stock, dividends] of Object.entries(stockDividends)) {
+      const upcomingDividends = dividends.filter(d => {
+        const dividendDate = new Date(d.date);
+        return dividendDate > now && dividendDate <= nextWeek;
+      });
+      
+      if (upcomingDividends.length > 0) {
+        hasUpcomingDividends = true;
+        const totalAmount = upcomingDividends.reduce((sum, d) => {
+          // For upcoming dividends, use current holdings as approximation
+          const currentHoldings = buyTransactions
+            .filter(t => t.stockName === stock)
+            .reduce((sum, t) => sum + t.quantity, 0) -
+            sellTransactions
+            .filter(t => t.stockName === stock)
+            .reduce((sum, t) => sum + t.quantity, 0);
+          return sum + (d.amount * Math.max(0, currentHoldings));
+        }, 0);
+        upcomingDividendsList.push(`${stock}: ${formatCurrency(totalAmount)} ב-${formatDate(upcomingDividends[0].date)}`);
+      }
+    }
+    
+    if (hasUpcomingDividends) {
+      console.log('Upcoming dividends in the next week:', upcomingDividendsList);
+      // Here you could add a toast notification or alert
+      // For now, we'll just log to console
+    }
+  }, [stockDividends]);
 
     // Auth management (lightweight): set user and load settings + handle share token
     useEffect(() => {
@@ -556,6 +793,8 @@ const App: React.FC = () => {
         return () => { unsubBuy(); unsubSell(); };
     }, [user?.uid, activePortfolioId]);
 
+
+
     // Portfolios listener and active portfolio guard
     useEffect(() => {
         if (!user) return;
@@ -593,8 +832,10 @@ const App: React.FC = () => {
         try {
             // Try Firestore first (only if configured)
             const userData = await getUserData(userId);
-            if (userData) {
-                setSettings(userData.settings || settings);
+            if (userData && userData.settings) {
+                // Merge settings to preserve any missing fields like polygonApiKey
+                const mergedSettings = { ...settings, ...userData.settings };
+                setSettings(mergedSettings);
                 return;
             }
         } catch (error) {
@@ -605,7 +846,11 @@ const App: React.FC = () => {
             const localRaw = localStorage.getItem(`portfolio_backup_${userId}`);
             if (localRaw) {
                 const localData = JSON.parse(localRaw);
-                if (localData.settings) setSettings(localData.settings);
+                if (localData.settings) {
+                    // Merge settings to preserve any missing fields like polygonApiKey
+                    const mergedSettings = { ...settings, ...localData.settings };
+                    setSettings(mergedSettings);
+                }
             }
         } catch {
             // ignore
@@ -853,6 +1098,8 @@ const App: React.FC = () => {
             weightedAvgBuyPrice: 0,
             weightedAvgCostBasis: 0,
             totalBuyCost: 0,
+            totalBuyValue: 0,
+            totalSellValue: 0,
             totalCommissions: 0,
             realizedGrossPnl: 0,
             realizedNetPnl: 0,
@@ -872,7 +1119,7 @@ const App: React.FC = () => {
 
         const totalBuyValue = buysForStock.reduce((sum, t) => sum + (t.price * t.quantity), 0);
         const totalBuyCommissions = buysForStock.reduce((sum, t) => sum + t.commission, 0);
-        const totalBuyCost = totalBuyValue + totalBuyCommissions;
+        const totalBuyCost = totalBuyValue + totalBuyCommissions; // כולל עמלות קנייה בלבד
         
         // Build FIFO buy lots with remaining quantities and per-share cost basis (כולל עמלות)
         type BuyLot = { remaining: number; pricePerShare: number; costBasisPerShare: number };
@@ -923,6 +1170,8 @@ const App: React.FC = () => {
             weightedAvgBuyPrice,
             weightedAvgCostBasis,
             totalBuyCost,
+            totalBuyValue, // Total buy value without commissions
+            totalSellValue, // Total value of sales
             totalCommissions, // שדה חדש/מעודכן
             realizedGrossPnl, // ללא עמלות
             realizedNetPnl,   // כולל עמלות ומס
@@ -971,11 +1220,12 @@ const App: React.FC = () => {
                     avgSellPrice: summary.realizedGrossPnl > 0 ? 
                         (summary.realizedGrossPnl + summary.weightedAvgBuyPrice * summary.totalSellQuantity) / summary.totalSellQuantity :
                         summary.weightedAvgBuyPrice,
-                    totalBuyCost: summary.weightedAvgBuyPrice * summary.totalSellQuantity,
-                    totalSellValue: summary.realizedGrossPnl + summary.weightedAvgBuyPrice * summary.totalSellQuantity,
+                    totalBuyCost: summary.totalBuyValue, // סך כל הקניות ללא עמלות (רק מחיר × כמות)
+                    totalSellValue: summary.totalSellValue,
                     realizedGross: summary.realizedGrossPnl,
                     realizedPnl: summary.realizedNetPnl,
-                    realizedPnlPercent: summary.roi
+                    realizedPnlPercent: summary.roi,
+                    totalCommissions: summary.totalCommissions
                 });
             }
         }
@@ -1327,6 +1577,90 @@ const App: React.FC = () => {
     const goToPerformance = () => setView('performance');
     const goToAnalytics = () => setView('analytics');
 
+    // Calculate shares owned at a specific date for dividend calculations
+    const calculateSharesAtDate = (stockSymbol: string, targetDate: Date): number => {
+        let sharesOwned = 0;
+        
+        // Sort transactions by date to process chronologically
+        const sortedBuys = buyTransactions
+            .filter(t => t.stockName === stockSymbol)
+            .sort((a, b) => safeDateMs(a.date) - safeDateMs(b.date));
+        
+        const sortedSells = sellTransactions
+            .filter(t => t.stockName === stockSymbol)
+            .sort((a, b) => safeDateMs(a.date) - safeDateMs(b.date));
+        
+        // Calculate cumulative shares up to the target date
+        for (const buy of sortedBuys) {
+            if (safeDateMs(buy.date) <= targetDate.getTime()) {
+                sharesOwned += buy.quantity;
+            }
+        }
+        
+        // Subtract sold shares up to the target date
+        for (const sell of sortedSells) {
+            if (safeDateMs(sell.date) <= targetDate.getTime()) {
+                sharesOwned -= sell.quantity;
+            }
+        }
+        
+        return Math.max(0, sharesOwned);
+    };
+
+    // Auto-load dividends when viewing stock detail
+    useEffect(() => {
+        if (activeStock && view === 'stockDetail') {
+            ensureDividendsLoaded(activeStock);
+        }
+    }, [activeStock, view, ensureDividendsLoaded]);
+
+    // Calculate dividend summary for a stock
+    const calculateDividendSummary = useCallback((stockSymbol: string, stockSummary: StockSummary) => {
+        const dividends = stockDividends[stockSymbol] || [];
+        if (dividends.length === 0) return null;
+        
+        const currentYear = new Date().getFullYear();
+        const yearDividends = dividends.filter(d => 
+            new Date(d.date).getFullYear() === currentYear
+        );
+        
+        // Calculate total annual dividend based on actual shares owned at each dividend date
+        const totalAnnualDividend = yearDividends.reduce((sum, d) => {
+            const sharesAtDate = calculateSharesAtDate(stockSymbol, new Date(d.exDate));
+            return sum + (d.amount * sharesAtDate);
+        }, 0);
+        
+        // Calculate dividend per share (based on current holdings)
+        const avgDividendPerShare = stockSummary.totalBuyQuantity > 0 ? 
+            totalAnnualDividend / stockSummary.totalBuyQuantity : 0;
+        
+        // Calculate dividend yield (annual dividend / current market value)
+        const currentPrice = currentStockPrices[stockSymbol] || 0;
+        const currentMarketValue = stockSummary.remainingQuantity * currentPrice;
+        const dividendYield = currentMarketValue > 0 ? 
+            (totalAnnualDividend / currentMarketValue) * 100 : 0;
+        
+        // Get last and next payment
+        const lastPayment = dividends[0]; // Already sorted by date
+        const nextPayment = dividends.find(d => new Date(d.date) > new Date());
+        
+        // Calculate total dividends received (historical) based on actual shares owned
+        const totalDividendsReceived = dividends.reduce((sum, d) => {
+            const sharesAtDate = calculateSharesAtDate(stockSymbol, new Date(d.exDate));
+            return sum + (d.amount * sharesAtDate);
+        }, 0);
+        
+        return {
+            totalAnnualDividend,
+            avgDividendPerShare,
+            dividendYield,
+            lastPayment,
+            nextPayment,
+            totalDividendsReceived,
+            dividendCount: dividends.length
+        };
+    }, [stockDividends, currentStockPrices, calculateSharesAtDate]);
+
 
     // --- Render Methods for Views ---
     const renderDashboard = () => {
@@ -1380,31 +1714,57 @@ const App: React.FC = () => {
                          <h2>סיכום תיק מניות - {dashboardFilter === 'open' ? 'עסקאות פתוחות' : 'עסקאות סגורות'}</h2>
                     </div>
                     <div className="summary-grid">
+
                         <div className="summary-item">
-                            <div className="label">שווי אחזקות</div>
+                            <div className="label">{dashboardFilter === 'open' ? 'שווי אחזקה' : 'עלות כוללת'}</div>
+                            <div className="label-small">
+                                {dashboardFilter === 'open' ? 'שווי נוכחי של המניות' : 'סך כל הקניות שבוצעו'}
+                            </div>
                             <div className="value">
                                 <span className="financial-number">
                                     {dashboardFilter === 'open' 
-                                        ? formatCurrency(openTransactions.reduce((sum, t) => sum + t.totalCost, 0))
+                                        ? formatCurrency(openTransactions.reduce((sum, t) => sum + t.currentValue, 0))
                                         : formatCurrency(closedTransactions.reduce((sum, t) => sum + t.totalBuyCost, 0))
                                     }
                                 </span>
                             </div>
                         </div>
+                        {dashboardFilter === 'closed' && (
+                            <div className="summary-item">
+                                <div className="label">שווי מכירה</div>
+                                <div className="label-small">
+                                    סך כל המכירות שבוצעו
+                                </div>
+                                <div className="value">
+                                    <span className="financial-number">
+                                        {formatCurrency(closedTransactions.reduce((sum, t) => sum + t.totalSellValue, 0))}
+                                    </span>
+                                </div>
+                            </div>
+                        )}
                         <div className="summary-item">
                             <div className="label">רווח/הפסד (%)</div>
+                            <div className="label-small">
+                                {dashboardFilter === 'open' ? 'אחוז רווח/הפסד נוכחי' : 'רווח/הפסד חלקי עלות כוללת'}
+                            </div>
                             <div className={`value ${pnlClass(dashboardFilter === 'open' ? 
-                                openTransactions.reduce((sum, t) => sum + t.unrealizedPnlPercent, 0) / Math.max(openTransactions.length, 1) :
-                                closedTransactions.reduce((sum, t) => sum + t.realizedPnlPercent, 0) / Math.max(closedTransactions.length, 1)
+                                ((openTransactions.reduce((sum, t) => sum + t.currentValue, 0) / openTransactions.reduce((sum, t) => sum + t.totalCost, 0)) - 1) * 100 :
+                                (() => {
+                                    const buyCost = closedTransactions.reduce((sum, t) => sum + t.totalBuyCost, 0);
+                                    const profitLoss = closedTransactions.reduce((sum, t) => sum + t.realizedGross, 0);
+                                    return buyCost > 0 ? (profitLoss / buyCost) * 100 : 0;
+                                })()
                             )}`}>
                                 <span className="financial-number">
                                     {dashboardFilter === 'open' 
                                         ? (() => {
-                                            const value = openTransactions.reduce((sum, t) => sum + t.unrealizedPnlPercent, 0) / Math.max(openTransactions.length, 1);
+                                            const value = ((openTransactions.reduce((sum, t) => sum + t.currentValue, 0) / openTransactions.reduce((sum, t) => sum + t.totalCost, 0)) - 1) * 100;
                                             return value < 0 ? `${Math.abs(value).toFixed(2)}% -` : `${value.toFixed(2)}%`;
                                         })()
                                         : (() => {
-                                            const value = closedTransactions.reduce((sum, t) => sum + t.realizedPnlPercent, 0) / Math.max(closedTransactions.length, 1);
+                                            const buyCost = closedTransactions.reduce((sum, t) => sum + t.totalBuyCost, 0);
+                                            const profitLoss = closedTransactions.reduce((sum, t) => sum + t.realizedGross, 0);
+                                            const value = buyCost > 0 ? (profitLoss / buyCost) * 100 : 0;
                                             return value < 0 ? `${Math.abs(value).toFixed(2)}% -` : `${value.toFixed(2)}%`;
                                         })()
                                     }
@@ -1413,6 +1773,9 @@ const App: React.FC = () => {
                         </div>
                             <div className="summary-item">
                                 <div className="label">רווח/הפסד ($)</div>
+                            <div className="label-small">
+                                {dashboardFilter === 'open' ? 'רווח/הפסד נוכחי' : 'רווח/הפסד ברוטו מהמכירות'}
+                            </div>
                                 <div className={`value ${pnlClass(dashboardFilter === 'open' ? 
                                     openTransactions.reduce((sum, t) => sum + t.unrealizedPnl, 0) :
                                     closedTransactions.reduce((sum, t) => sum + t.realizedGross, 0)
@@ -1432,7 +1795,39 @@ const App: React.FC = () => {
                                 </div>
                             </div>
                         <div className="summary-item">
+                            <div className="label">רווח/הפסד נטו</div>
+                            <div className="label-small">
+                                רווח/הפסד לאחר ניקוי מס
+                            </div>
+                            <div className={`value ${pnlClass(dashboardFilter === 'open' ? 
+                                (() => {
+                                    const unrealizedPnl = openTransactions.reduce((sum, t) => sum + t.unrealizedPnl, 0);
+                                    const taxOnProfit = unrealizedPnl > 0 ? unrealizedPnl * settings.taxRate : 0;
+                                    return unrealizedPnl - taxOnProfit;
+                                })() :
+                                closedTransactions.reduce((sum, t) => sum + t.realizedPnl, 0)
+                            )}`}>
+                                <span className="financial-number">
+                                    {dashboardFilter === 'open' 
+                                        ? (() => {
+                                            const unrealizedPnl = openTransactions.reduce((sum, t) => sum + t.unrealizedPnl, 0);
+                                            const taxOnProfit = unrealizedPnl > 0 ? unrealizedPnl * settings.taxRate : 0;
+                                            const netPnl = unrealizedPnl - taxOnProfit;
+                                            return netPnl < 0 ? `${formatCurrency(Math.abs(netPnl))} -` : formatCurrency(netPnl);
+                                        })()
+                                        : (() => {
+                                            const value = closedTransactions.reduce((sum, t) => sum + t.realizedPnl, 0);
+                                                return value < 0 ? `${formatCurrency(Math.abs(value))} -` : formatCurrency(value);
+                                            })()
+                                        }
+                                    </span>
+                                </div>
+                            </div>
+                        <div className="summary-item">
                             <div className="label">סה"כ עמלות</div>
+                            <div className="label-small">
+                                {dashboardFilter === 'open' ? 'עמלות על מניות פתוחות' : 'עמלות על עסקאות סגורות'}
+                            </div>
                             <div className="value">
                                 <span className="financial-number">
                                     {formatCurrency(dashboardFilter === 'open' 
@@ -1446,6 +1841,54 @@ const App: React.FC = () => {
                                 </span>
                             </div>
                         </div>
+
+                        {/* דיבידנדים לסיכום הכללי */}
+                        <div className="summary-item dividend-card">
+                            <div className="label">דיבידנדים שנתיים</div>
+                            <div className="label-small">
+                                סך כל הדיבידנדים השנה
+                            </div>
+                            <div className="value dividend-value">
+                                {(() => {
+                                    const totalAnnualDividends = allSummaries.reduce((sum, { stock, summary }) => {
+                                        const dividends = stockDividends[stock] || [];
+                                        const currentYear = new Date().getFullYear();
+                                        const yearDividends = dividends.filter(d => 
+                                            new Date(d.date).getFullYear() === currentYear
+                                        );
+                                        return sum + yearDividends.reduce((s, d) => s + d.amount, 0);
+                                    }, 0);
+                                    return formatCurrency(totalAnnualDividends);
+                                })()}
+                            </div>
+                        </div>
+
+                        <div className="summary-item dividend-card">
+                            <div className="label">תשואה כוללת</div>
+                            <div className="label-small">
+                                רווח/הפסד + דיבידנדים
+                            </div>
+                            <div className="value dividend-value">
+                                {(() => {
+                                    const totalPnl = dashboardFilter === 'open' 
+                                        ? openTransactions.reduce((sum, t) => sum + t.unrealizedPnl, 0)
+                                        : closedTransactions.reduce((sum, t) => sum + t.realizedGross, 0);
+                                    
+                                    const totalAnnualDividends = allSummaries.reduce((sum, { stock, summary }) => {
+                                        const dividends = stockDividends[stock] || [];
+                                        const currentYear = new Date().getFullYear();
+                                        const yearDividends = dividends.filter(d => 
+                                            new Date(d.date).getFullYear() === currentYear
+                                        );
+                                        return sum + yearDividends.reduce((s, d) => s + d.amount, 0);
+                                    }, 0);
+                                    
+                                    const totalReturn = totalPnl + totalAnnualDividends;
+                                    return <span className={pnlClass(totalReturn)}>{formatCurrency(totalReturn)}</span>;
+                                })()}
+                            </div>
+                        </div>
+
                     </div>
                 </div>
                  <div className="card">
@@ -1523,16 +1966,7 @@ const App: React.FC = () => {
                                         </>
                                     ) : (
                                         <>
-                                            <th>
-                                                <button type="button" className="th-sort-btn" onClick={() => requestSort('totalBuyCost')}>
-                                                    <span>עלות קניה</span> <SortIndicator columnKey="totalBuyCost" />
-                                                </button>
-                                            </th>
-                                            <th>
-                                                <button type="button" className="th-sort-btn" onClick={() => requestSort('totalSellValue')}>
-                                                    <span>שווי אחזקה</span> <SortIndicator columnKey="totalSellValue" />
-                                                </button>
-                                            </th>
+
                                             <th>
                                                 <button type="button" className="th-sort-btn" onClick={() => requestSort('realizedGross')}>
                                                     <span>רווח / הפסד</span> <SortIndicator columnKey="realizedGross" />
@@ -1546,6 +1980,11 @@ const App: React.FC = () => {
                                             <th>
                                                 <button type="button" className="th-sort-btn" onClick={() => requestSort('realizedPnl')}>
                                                     <span>רווח / הפסד נטו</span> <SortIndicator columnKey="realizedPnl" />
+                                                </button>
+                                            </th>
+                                            <th>
+                                                <button type="button" className="th-sort-btn" onClick={() => requestSort('totalCommissions')}>
+                                                    <span>סה"כ עמלות</span> <SortIndicator columnKey="totalCommissions" />
                                                 </button>
                                             </th>
                                         </>
@@ -1596,18 +2035,17 @@ const App: React.FC = () => {
                                             return (
                                                 <tr key={transaction.stock} className="stock-table-row" onClick={() => goToStockDetail(transaction.stock)}>
                                                     <td>{transaction.stock}</td>
-                                                    <td>{formatCurrency(transaction.totalBuyCost)}</td>
-                                                    <td>{formatCurrency(transaction.totalSellValue)}</td>
                                                     <td className={pnlClass(transaction.realizedGross)}>{transaction.realizedGross < 0 ? `${formatCurrency(Math.abs(transaction.realizedGross))} -` : formatCurrency(transaction.realizedGross)}</td>
                                                     <td className={pnlClass(transaction.realizedPnlPercent)}>{transaction.realizedPnlPercent < 0 ? `${Math.abs(transaction.realizedPnlPercent).toFixed(2)}% -` : `${transaction.realizedPnlPercent.toFixed(2)}%`}</td>
                                                     <td className={pnlClass(transaction.realizedPnl)}>{transaction.realizedPnl < 0 ? `${formatCurrency(Math.abs(transaction.realizedPnl))} -` : formatCurrency(transaction.realizedPnl)}</td>
+                                                    <td>{formatCurrency(transaction.totalCommissions || 0)}</td>
                                                 </tr>
                                             );
                                         }
                                     })
                                  ) : (
                                     <tr>
-                                        <td colSpan={dashboardFilter === 'open' ? 8 : 6}>
+                                        <td colSpan={dashboardFilter === 'open' ? 8 : 5}>
                                             {dashboardFilter === 'open' ? 'אין כרגע עסקאות פתוחות.' : 'אין עסקאות סגורות.'}
                                         </td>
                                     </tr>
@@ -1784,7 +2222,7 @@ const App: React.FC = () => {
             const totalInvestedForSold = totalSellQuantity * avgBuyPriceNoFees;
             const roi = totalInvestedForSold > 0 ? (realizedGrossPnl / totalInvestedForSold) * 100 : 0;
 
-            return { totalBuyQuantity, totalSellQuantity, remainingQuantity: remainingQty, weightedAvgBuyPrice, weightedAvgCostBasis, totalBuyCost, totalCommissions, realizedGrossPnl, realizedNetPnl, roi };
+            return { totalBuyQuantity, totalSellQuantity, remainingQuantity: remainingQty, weightedAvgBuyPrice, weightedAvgCostBasis, totalBuyCost, totalBuyValue, totalCommissions, realizedGrossPnl, realizedNetPnl, roi, totalSellValue };
         })();
 
         return (
@@ -1800,9 +2238,9 @@ const App: React.FC = () => {
                         {(() => {
                             const totalSaleProceeds = perSellRealized.reduce((s, r) => s + r.totalProceeds, 0);
                             const investedSoldNoFees = perSellRealized.reduce((s, r) => s + r.investedCostNoFees, 0);
-                            // אם אין עדיין מכירות, הצג את עלות הקנייה הכוללת (ללא עמלות)
+                            // עלות קנייה תמיד מציגה את סך כל הקניות שבוצעו במניה (ללא עמלות)
                             const totalBuyValueNoFees = buysFiltered.reduce((sum, t) => sum + (t.price * t.quantity), 0);
-                            const investedDisplay = perSellRealized.length > 0 ? investedSoldNoFees : totalBuyValueNoFees;
+                            const investedDisplay = totalBuyValueNoFees;
                             const realizedGrossNoFees = perSellRealized.reduce((s, r) => s + r.realizedGross, 0);
                             const pnlPercent = investedSoldNoFees > 0 ? (realizedGrossNoFees / investedSoldNoFees) * 100 : 0;
                             const taxOnGross = realizedGrossNoFees > 0 ? realizedGrossNoFees * settings.taxRate : 0;
@@ -1812,16 +2250,221 @@ const App: React.FC = () => {
                             const totalCommissionsAll = totalBuyCommissions + totalSellCommissions;
                             return (
                                 <>
-                                    <div className="summary-item"><div className="label">עלות קנייה</div><div className="value"><span className="financial-number">{formatCurrency(investedDisplay)}</span></div></div>
-                                    <div className="summary-item"><div className="label">עלות מכירה</div><div className="value"><span className="financial-number">{formatCurrency(totalSaleProceeds)}</span></div></div>
-                                    <div className="summary-item"><div className="label">רווח והפסד</div><div className={`value ${pnlClass(realizedGrossNoFees)}`}><span className="financial-number">{formatCurrency(realizedGrossNoFees)}</span></div></div>
-                                    <div className="summary-item"><div className="label">אחוז תשואה</div><div className={`value ${pnlClass(pnlPercent)}`}><span className="financial-number">{pnlPercent.toFixed(2)}%</span></div></div>
-                                    <div className="summary-item"><div className="label">רווח/הפסד נטו</div><div className={`value ${pnlClass(realizedNetAfterTaxNoFees)}`}><span className="financial-number">{formatCurrency(realizedNetAfterTaxNoFees)}</span></div></div>
-                                    <div className="summary-item"><div className="label">סה"כ עמלות</div><div className="value"><span className="financial-number">{formatCurrency(totalCommissionsAll)}</span></div></div>
+                                    <div className="summary-item">
+                                        <div className="label">עלות כוללת</div>
+                                        <div className="label-small">סך כל הקניות שבוצעו במניה</div>
+                                        <div className="value"><span className="financial-number">{formatCurrency(investedDisplay)}</span></div>
+                                    </div>
+                                    <div className="summary-item">
+                                        <div className="label">שווי מכירה</div>
+                                        <div className="label-small">סך כל המכירות שבוצעו במניה</div>
+                                        <div className="value"><span className="financial-number">{formatCurrency(totalSaleProceeds)}</span></div>
+                                    </div>
+                                    <div className="summary-item">
+                                        <div className="label">רווח והפסד</div>
+                                        <div className="label-small">רווח/הפסד ברוטו מהמכירות</div>
+                                        <div className={`value ${pnlClass(realizedGrossNoFees)}`}><span className="financial-number">{formatCurrency(realizedGrossNoFees)}</span></div>
+                                    </div>
+                                    <div className="summary-item">
+                                        <div className="label">אחוז תשואה</div>
+                                        <div className="label-small">אחוז רווח/הפסד על המניות שנמכרו</div>
+                                        <div className={`value ${pnlClass(pnlPercent)}`}><span className="financial-number">{pnlPercent.toFixed(2)}%</span></div>
+                                    </div>
+                                    <div className="summary-item">
+                                        <div className="label">רווח/הפסד נטו</div>
+                                        <div className="label-small">רווח/הפסד אחרי מסים</div>
+                                        <div className={`value ${pnlClass(realizedNetAfterTaxNoFees)}`}><span className="financial-number">{formatCurrency(realizedNetAfterTaxNoFees)}</span></div>
+                                    </div>
+                                    <div className="summary-item">
+                                        <div className="label">סה"כ עמלות</div>
+                                        <div className="label-small">עמלות קנייה ומכירה</div>
+                                        <div className="value"><span className="financial-number">{formatCurrency(totalCommissionsAll)}</span></div>
+                                    </div>
+                                    
+                                    {/* דיבידנדים שנתיים */}
+                                    {(() => {
+                                        const dividendSummary = calculateDividendSummary(activeStock, filteredSummary);
+                                        if (dividendSummary && dividendSummary.totalAnnualDividend > 0) {
+                                            return (
+                                                <div className="summary-item dividend-card">
+                                                    <div className="label">דיבידנדים שנתיים</div>
+                                                    <div className="label-small">סך כל הדיבידנדים השנה</div>
+                                                    <div className="value dividend-value">
+                                                        <span className="financial-number">{formatCurrency(dividendSummary.totalAnnualDividend)}</span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+                                        return null;
+                                    })()}
+                                    
+                                    {/* תשואה כוללת */}
+                                    {(() => {
+                                        const dividendSummary = calculateDividendSummary(activeStock, filteredSummary);
+                                        if (dividendSummary && dividendSummary.totalAnnualDividend > 0) {
+                                            const totalReturn = realizedGrossNoFees + dividendSummary.totalAnnualDividend;
+                                            return (
+                                                <div className="summary-item dividend-card">
+                                                    <div className="label">תשואה כוללת</div>
+                                                    <div className="label-small">רווח מהמכירה + דיבידנדים</div>
+                                                    <div className={`value dividend-value ${pnlClass(totalReturn)}`}>
+                                                        <span className="financial-number">{formatCurrency(totalReturn)}</span>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+                                        return null;
+                                    })()}
                                 </>
                             );
                         })()}
                     </div>
+                </div>
+
+                {/* קטגוריית דיבידנדים חדשה */}
+                <div className="card">
+                    <div className="card-header-with-action" style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'10px',flexWrap:'wrap'}}>
+                        <h2>דיבידנדים ותשואה</h2>
+                        <button 
+                            className="icon-btn-sm refresh-btn"
+                            onClick={() => activeStock && fetchStockDividends(activeStock)}
+                            disabled={activeStock ? isLoadingDividends[activeStock] : false}
+                            title="רענן דיבידנדים"
+                        >
+                            {activeStock && isLoadingDividends[activeStock] ? <div className="spinner"></div> : <RefreshIcon />}
+                        </button>
+                    </div>
+                    
+                    {(() => {
+                        if (!activeStock) return <div className="no-data">בחר מניה להצגת דיבידנדים</div>;
+                        
+                        const dividendSummary = calculateDividendSummary(activeStock, filteredSummary);
+                        
+                        if (!dividendSummary) {
+                            return (
+                                <div className="no-data">
+                                    אין נתוני דיבידנדים למניה זו
+                                    <br />
+                                    <small>לחץ על כפתור הרענון כדי לטעון דיבידנדים</small>
+                                </div>
+                            );
+                        }
+                        
+                        return (
+                            <>
+                                <div className="summary-grid">
+                                    <div className="summary-item dividend-card">
+                                        <div className="label">דיבידנד שנתי</div>
+                                        <div className="label-small">סך כל הדיבידנדים השנה</div>
+                                        <div className="value dividend-value">{formatCurrency(dividendSummary.totalAnnualDividend)}</div>
+                                    </div>
+                                    
+                                    <div className="summary-item dividend-card">
+                                        <div className="label">דיבידנד למניה</div>
+                                        <div className="label-small">דיבידנד ממוצע למניה השנה</div>
+                                        <div className="value dividend-value">{formatCurrency(dividendSummary.avgDividendPerShare)}</div>
+                                    </div>
+                                    
+                                    <div className="summary-item dividend-card">
+                                        <div className="label">תשואה כוללת</div>
+                                        <div className="label-small">רווח מהמכירה + דיבידנדים</div>
+                                        <div className="value dividend-value">
+                                            {(() => {
+                                                const totalReturn = filteredSummary.realizedGrossPnl + dividendSummary.totalAnnualDividend;
+                                                return <span className={pnlClass(totalReturn)}>{formatCurrency(totalReturn)}</span>;
+                                            })()}
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="summary-item dividend-card">
+                                        <div className="label">אחוז דיבידנד</div>
+                                        <div className="label-small">דיבידנד שנתי חלקי שווי שוק</div>
+                                        <div className="value dividend-value">{dividendSummary.dividendYield.toFixed(2)}%</div>
+                                    </div>
+                                    
+                                    <div className="summary-item dividend-card">
+                                        <div className="label">תשלום אחרון</div>
+                                        <div className="label-small">דיבידנד אחרון ששולם</div>
+                                        <div className="value dividend-value">
+                                            {dividendSummary.lastPayment ? (
+                                                <>
+                                                    {formatCurrency(dividendSummary.lastPayment.amount)}
+                                                    <br />
+                                                    <small>{formatDate(dividendSummary.lastPayment.date)}</small>
+                                                </>
+                                            ) : 'אין נתונים'}
+                                        </div>
+                                    </div>
+                                    
+                                    <div className="summary-item dividend-card">
+                                        <div className="label">תשלום הבא</div>
+                                        <div className="label-small">תאריך תשלום הדיבידנד הבא</div>
+                                        <div className="value dividend-value">
+                                            {dividendSummary.nextPayment ? (
+                                                <>
+                                                    {formatDate(dividendSummary.nextPayment.date)}
+                                                    <br />
+                                                    <small>{formatCurrency(dividendSummary.nextPayment.amount)}</small>
+                                                </>
+                                            ) : 'אין תשלום עתידי'}
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                {/* כפתור להסתרה/הצגה של טבלת הדיבידנדים */}
+                                <div style={{display:'flex',justifyContent:'center',marginTop:'20px',marginBottom:'10px'}}>
+                                    <button 
+                                        className="filter-btn"
+                                        onClick={() => setShowDividendsTable(s => !s)}
+                                    >
+                                        {showDividendsTable ? 'הסתר טבלת דיבידנדים' : 'הצג טבלת דיבידנדים'}
+                                    </button>
+                                </div>
+                                
+                                {/* טבלת היסטוריית דיבידנדים */}
+                                {showDividendsTable && (
+                                    <div className="table-container">
+                                        <h3>היסטוריית דיבידנדים</h3>
+                                        <table className="dividends-table">
+                                        <thead>
+                                            <tr>
+                                                <th>תאריך תשלום</th>
+                                                <th>תאריך ללא דיבידנד</th>
+                                                <th>כמות מניות</th>
+                                                <th>דיבידנד למניה</th>
+                                                <th>סה"כ דיבידנד</th>
+                                                <th>סוג</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {stockDividends[activeStock]?.map((dividend, index) => {
+                                                // חישוב הכמות המדויקת שהייתה לך בתאריך הדיבידנד
+                                                const dividendDate = new Date(dividend.exDate);
+                                                const sharesAtDate = calculateSharesAtDate(activeStock, dividendDate);
+                                                const totalDividend = dividend.amount * sharesAtDate;
+                                                return (
+                                                    <tr key={index}>
+                                                        <td>{formatDate(dividend.date)}</td>
+                                                        <td>{formatDate(dividend.exDate)}</td>
+                                                        <td>{sharesAtDate}</td>
+                                                        <td><span className="financial-number">{formatCurrency(dividend.amount)}</span></td>
+                                                        <td><span className="financial-number">{formatCurrency(totalDividend)}</span></td>
+                                                        <td>
+                                                            <span className={`dividend-type-badge ${dividend.type}`}>
+                                                                {dividend.type === 'regular' ? 'רגיל' : 
+                                                                 dividend.type === 'special' ? 'מיוחד' : 'פירוק'}
+                                                            </span>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                    </div>
+                                )}
+                            </>
+                        );
+                    })()}
                 </div>
 
                 <div className="card">
@@ -1859,7 +2502,7 @@ const App: React.FC = () => {
                       {showBuyTable && buysVisibleRows.length > 0 && (
                         <div className="transactions-list">
                             <table className="transactions-table">
-                                <thead><tr><th>תאריך</th><th>שער קניה</th><th>כמות</th><th>שווי אחזקה</th><th>עמלה</th><th>רווח נוכחי</th><th>אחוז תשואה</th><th>פעולות</th></tr></thead>
+                                <thead><tr><th>תאריך</th><th>שער קניה</th><th>כמות</th><th>שווי אחזקה</th><th>עמלה</th><th>רווח נוכחי</th><th>אחוז תשואה</th><th>סטאטוס</th><th>פעולות</th></tr></thead>
                                 <tbody>
                                       {buysVisibleRows.map(t => {
                                             const remaining = remainingByBuyId[t.id] ?? t.quantity;
@@ -1874,14 +2517,19 @@ const App: React.FC = () => {
                                             <tr key={t.id}>
                                         <td>{formatDate(t.date)}</td>
                                         <td><span className="financial-number">{formatCurrency(t.price)}</span></td>
-                                                <td>{remaining}</td>
-                                                <td><span className="financial-number">{formatCurrency(totalCost)}</span></td>
+                                                <td>{buyHistoryFilter === 'unsold' ? remaining : t.quantity}</td>
+                                                <td><span className="financial-number">{formatCurrency(buyHistoryFilter === 'unsold' ? (remaining * t.price) : totalCost)}</span></td>
                                         <td><span className="financial-number">{formatCurrency(t.commission)}</span></td>
                                                 <td className={unrealizedNet !== null ? pnlClass(unrealizedNet) : ''}>
                                                     <span className="financial-number">{unrealizedNet !== null ? formatCurrency(unrealizedNet) : '---'}</span>
                                                 </td>
                                                 <td className={unrealizedNet !== null ? pnlClass(unrealizedNet) : ''}>
                                                     {unrealizedPercent !== null ? `${unrealizedPercent.toFixed(2)}%` : '---'}
+                                                </td>
+                                                    <td>
+                                                        <span className={`status-badge ${remaining === 0 ? 'closed' : 'open'}`}>
+                                                            {remaining === 0 ? 'סגור' : 'פתוח'}
+                                                        </span>
                                                 </td>
                                         <td className="actions-cell">
                                             <button className="edit-btn" title="ערוך" onClick={() => handleStartEdit(t)}><EditIcon /></button>
@@ -1892,13 +2540,17 @@ const App: React.FC = () => {
                                      })}
                                      {(() => {
                                         const rows = buysVisibleRows;
-                                        const totalRemaining = rows.reduce((s,t)=> s + (remainingByBuyId[t.id] ?? t.quantity),0);
-                                         const totalPriceForRemaining = rows.reduce((s,t)=>{
-                                             const remaining = (remainingByBuyId[t.id] ?? t.quantity);
-                                             return s + remaining * t.price;
-                                         },0);
-                                         const avgBuyPriceSummary = totalRemaining > 0 ? (totalPriceForRemaining / totalRemaining) : 0;
-                                        const totalCostAll = rows.reduce((s,t)=> s + (t.price * t.quantity),0);
+                                        // עבור "יתרה" - הצג כמות נותרת, עבור "הכול" ו"נמכר" - הצג כמות מקורית
+                                        const totalDisplayQuantity = buyHistoryFilter === 'unsold' 
+                                            ? rows.reduce((s,t)=> s + (remainingByBuyId[t.id] ?? t.quantity),0)
+                                            : rows.reduce((s,t)=> s + t.quantity,0);
+                                        const totalPriceForDisplay = buyHistoryFilter === 'unsold'
+                                            ? rows.reduce((s,t)=> s + (remainingByBuyId[t.id] ?? t.quantity) * t.price,0)
+                                            : rows.reduce((s,t)=> s + t.quantity * t.price,0);
+                                        const avgBuyPriceSummary = totalDisplayQuantity > 0 ? (totalPriceForDisplay / totalDisplayQuantity) : 0;
+                                        const totalCostAll = buyHistoryFilter === 'unsold'
+                                            ? rows.reduce((s,t)=> s + (remainingByBuyId[t.id] ?? t.quantity) * t.price,0)
+                                            : rows.reduce((s,t)=> s + t.quantity * t.price,0);
                                         const totalUnrealized = rows.reduce((s,t)=>{
                                             const remaining = remainingByBuyId[t.id] ?? t.quantity;
                                              const cbps = t.price; // ללא עמלות
@@ -1916,11 +2568,12 @@ const App: React.FC = () => {
                                             <tr className="summary-row">
                                                 <td>סיכום</td>
                                                 <td><span className="financial-number">{formatCurrency(avgBuyPriceSummary)}</span></td>
-                                                <td>{totalRemaining}</td>
+                                                <td>{totalDisplayQuantity}</td>
                                                 <td><span className="financial-number">{formatCurrency(totalCostAll)}</span></td>
                                                 <td><span className="financial-number">{formatCurrency(totalCommissions)}</span></td>
                                                 <td className={pnlClass(totalUnrealized)}><span className="financial-number">{currentPrice ? formatCurrency(totalUnrealized) : '---'}</span></td>
                                                 <td className={pnlClass(totalUnrealizedPercent)}>{currentPrice ? `${totalUnrealizedPercent.toFixed(2)}%` : '---'}</td>
+                                                <td></td>
                                                 <td></td>
                                             </tr>
                                         );
@@ -1973,11 +2626,14 @@ const App: React.FC = () => {
                     </div>
                     {showSellTable && sellsForActiveStock.length > 0 && <div className="transactions-list">
                         <table className="transactions-table">
-                            <thead><tr><th>תאריך</th><th>שער מכירה</th><th>כמות</th><th>שווי אחזקה</th><th>עמלה</th><th>סה"כ רווח</th><th>אחוז תשואה</th><th>פעולות</th></tr></thead>
+                            <thead><tr><th>תאריך</th><th>שער קניה</th><th>שער מכירה</th><th>כמות</th><th>שווי אחזקה</th><th>עמלה</th><th>סה"כ רווח</th><th>אחוז תשואה</th><th>פעולות</th></tr></thead>
                             <tbody>
-                                {perSellRealized.map(r => (
+                                {perSellRealized.map(r => {
+                                    const avgBuyPrice = r.investedCostNoFees / r.quantity;
+                                    return (
                                     <tr key={r.id}>
                                         <td>{formatDate(r.date)}</td>
+                                            <td><span className="financial-number">{formatCurrency(avgBuyPrice)}</span></td>
                                         <td><span className="financial-number">{formatCurrency(r.price)}</span></td>
                                         <td>{r.quantity}</td>
                                         <td><span className="financial-number">{formatCurrency(r.totalProceeds)}</span></td>
@@ -1988,10 +2644,12 @@ const App: React.FC = () => {
                                             <button className="delete-btn" title="מחק" onClick={() => handleDeleteSell(r.id)}><DeleteIcon /></button>
                                         </td>
                                     </tr>
-                                ))}
+                                    );
+                                })}
                                 {perSellRealized.length > 0 && (
                                     <tr className="summary-row">
                                         <td>סיכום</td>
+                                        <td></td>
                                         <td></td>
                                         <td>{perSellRealized.reduce((s, r) => s + r.quantity, 0)}</td>
                                         <td><span className="financial-number">{formatCurrency(perSellRealized.reduce((s, r) => s + r.totalProceeds, 0))}</span></td>
@@ -2879,18 +3537,78 @@ const App: React.FC = () => {
 
                 {/* ייבוא/ייצוא וכלים */}
                 <div className="card">
-                    <h2>ייבוא/ייצוא וכלים</h2>
-                    <div className="settings-actions-header">
+                    <h2>ייבוא/ייצוא נתונים</h2>
+                    <p style={{marginTop:0}}>בחר כיצד לייבא/לייצא נתונים. ניתן לעבוד עם קובץ אקסל או עם Google Sheets. לעבודה עם Sheets ודא שה‑APIs פעילים והוענקו הרשאות.</p>
+                    <div className="settings-actions-header" style={{gap:12, flexWrap:'wrap', position:'initial'}}>
                         <button onClick={handleManualSave} title="שמור תיק" className="btn-save-inline">
                             <SaveIcon color="#34c759" />
                         </button>
-                        <button className="btn-export-inline" title="ייצוא לאקסל" onClick={handleExportToExcel}>
-                            <svg width="18" height="18" fill="#0070c0" viewBox="0 0 16 16"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">X</text></svg>
+                        <button className="action-btn-lg" title="ייצוא נתונים" onClick={() => {
+                            setModal({
+                                title: 'ייצוא נתונים',
+                                message: 'בחר יעד הייצוא',
+                                actions: [
+                                    { label: 'Excel', value: 'excel', variant: 'primary' },
+                                    { label: 'Google Sheets', value: 'sheets' },
+                                    { label: 'ביטול', value: 'cancel' }
+                                ],
+                                onClose: async (v) => {
+                                    setModal(null);
+                                    if (v === 'excel') { await handleExportToExcel(); return; }
+                                    if (v === 'sheets') {
+                                        const token = await connectGoogleSheets();
+                                        if (!token) { setModal({ title: 'שגיאה', message: 'נדרש חיבור ל‑Google Sheets.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) }); return; }
+                                        let sid = settings.sheetsSpreadsheetId;
+                                        if (!sid) {
+                                            // הצע ליצור תבנית
+                                            setModal({
+                                                title: 'אין גיליון מחובר',
+                                                message: 'לא נמצא מזהה גיליון בהגדרות. ליצור תבנית חדשה ולהשתמש בה?',
+                                                actions: [{ label: 'לא', value: 'no' }, { label: 'כן', value: 'yes', variant: 'primary' }],
+                                                onClose: async (ans) => {
+                                                    setModal(null);
+                                                    if (ans === 'yes') { sid = await createSheetsTemplate(token) || ''; setSettings(p=>({...p, sheetsSpreadsheetId: sid })); await exportToSheets(token, sid); }
+                                                }
+                                            });
+                                            return;
+                                        }
+                                        const ok = await exportToSheets(token, sid);
+                                        setModal({ title: ok ? 'הייצוא הושלם' : 'שגיאה', message: ok ? 'הנתונים נכתבו לגיליון המחובר.' : 'כתיבה לגיליון נכשלה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                                    }
+                                }
+                            });
+                        }}>
+                            <svg className="icon" viewBox="0 0 16 16" fill="#0070c0"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">⇧</text></svg>
+                            <span className="label">ייצוא נתונים</span>
                         </button>
-                        <label className="btn-export-inline" title="ייבוא מאקסל">
-                            <input ref={importInputRef as any} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImportFromExcel} />
-                            <svg width="18" height="18" fill="#0070c0" viewBox="0 0 16 16"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">⇧</text></svg>
-                        </label>
+                        <div className="helper-text">ייצוא לאקסל או ל‑Google Sheets (אם מחובר).</div>
+                        <button className="action-btn-lg" title="ייבוא נתונים" onClick={() => {
+                            setModal({
+                                title: 'ייבוא נתונים',
+                                message: 'בחר מקור ייבוא',
+                                actions: [
+                                    { label: 'Excel', value: 'excel', variant: 'primary' },
+                                    { label: 'Google Sheets', value: 'sheets' },
+                                    { label: 'ביטול', value: 'cancel' }
+                                ],
+                                onClose: async (v) => {
+                                    setModal(null);
+                                    if (v === 'excel') { importInputRef.current?.click(); return; }
+                                    if (v === 'sheets') {
+                                        const token = await connectGoogleSheets();
+                                        if (!token) { setModal({ title: 'שגיאה', message: 'נדרש חיבור ל‑Google Sheets.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) }); return; }
+                                        let sid = settings.sheetsSpreadsheetId;
+                                        if (!sid) { setModal({ title: 'אין גיליון מחובר', message: 'הזן Spreadsheet ID בהגדרות או צור תבנית חדשה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) }); return; }
+                                        try { await importFromSheets(token, sid); setModal({ title: 'ייבוא הושלם', message: 'הנתונים נקראו מהגיליון המחובר.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) }); } catch (e:any) { setModal({ title: 'שגיאה', message: e?.message || 'קריאה מהגיליון נכשלה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) }); }
+                                    }
+                                }
+                            });
+                        }}>
+                            <svg className="icon" viewBox="0 0 16 16" fill="#0070c0"><path d="M2 2h12v12H2z" fill="#fff"/><path d="M4 4h8v8H4z" fill="#0070c0"/><text x="8" y="11" textAnchor="middle" fontSize="7" fill="#fff" fontFamily="Arial">⬇</text></svg>
+                            <span className="label">ייבוא נתונים</span>
+                        </button>
+                        <div className="helper-text">ייבוא מקובץ אקסל בפורמט התבנית או מגיליון Sheets מחובר.</div>
+                        <input ref={importInputRef as any} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleImportFromExcel} />
                         <button className="btn-export-inline" title="חיבור ל-Google Sheets" onClick={async ()=>{
                             const token = await connectGoogleSheets();
                             if (!token) {
@@ -2905,20 +3623,17 @@ const App: React.FC = () => {
                             try {
                                 const token = await connectGoogleSheets();
                                 if (!token) { setModal({ title: 'שגיאה', message: 'נדרש חיבור ל-Google Sheets.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) }); return; }
-                                const resp = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-                                    method: 'POST',
-                                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ properties: { title: 'Stock Calculator - Template' }, sheets: [{ properties: { title: 'קניות' } }, { properties: { title: 'מכירות' } }, { properties: { title: 'הגדרות' } }] })
-                                });
-                                const data = await resp.json();
-                                if (!resp.ok || !data?.spreadsheetId) throw new Error('create failed');
-                                const sid = data.spreadsheetId as string;
+                                const create = await googleApiRequest<any>('https://sheets.googleapis.com/v4/spreadsheets', { method: 'POST', token, body: { properties: { title: 'Stock Calculator - Template' }, sheets: [{ properties: { title: 'קניות' } }, { properties: { title: 'מכירות' } }, { properties: { title: 'הגדרות' } }] } });
+                                if (!create.ok || !create.data?.spreadsheetId) throw new Error(create.errorText || 'create failed');
+                                const sid = create.data.spreadsheetId as string;
                                 const values = { valueInputOption: 'RAW', data: [ { range: 'קניות!A1:G1', values: [['id','stockName','price','quantity','total','commission','date']] }, { range: 'מכירות!A1:G1', values: [['id','stockName','price','quantity','total','commission','date']] }, { range: 'הגדרות!A1:D1', values: [['minCommission','commissionRate','additionalFee','taxRate']] } ] } as any;
-                                await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values:batchUpdate`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+                                const write = await googleApiRequest<any>(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values:batchUpdate`, { method: 'POST', token, body: values });
+                                if (!write.ok) throw new Error(write.errorText || 'write failed');
                                 setSettings(prev => ({ ...prev, sheetsSpreadsheetId: sid }));
                                 setModal({ title: 'תבנית נוצרה', message: 'נוצר גיליון תבנית עם כותרות אחידות. ניתן לשתף/למלא נתונים וליבא/לייצא.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
                             } catch (e) {
-                                setModal({ title: 'שגיאה', message: 'יצירת הגיליון נכשלה.', actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
+                                const msg = e instanceof Error ? e.message : 'יצירת הגיליון נכשלה.';
+                                setModal({ title: 'שגיאה', message: msg, actions: [{ label: 'סגור', value: 'ok', variant: 'primary' }], onClose: () => setModal(null) });
                             }
                         }}>
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="#0F9D58"><path d="M3 3h18v18H3z" fill="#fff"/><path d="M7 7h10v2H7zm0 4h10v2H7zm0 4h6v2H7z" fill="#0F9D58"/></svg>

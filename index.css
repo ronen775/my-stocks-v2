@@ -695,6 +695,131 @@ button:disabled {
   transition: color 0.3s ease;
 }
 
+.summary-item .label-small {
+  color: var(--secondary-color);
+  font-size: 0.8em;
+  margin-bottom: 5px;
+  opacity: 0.8;
+  font-weight: normal;
+  line-height: 1.2;
+  max-width: 100%;
+  text-align: center;
+}
+
+/* Status badges for buy/sell tables */
+.status-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 0.8em;
+  font-weight: 600;
+  text-align: center;
+  min-width: 50px;
+}
+
+.status-badge.open {
+  background-color: #10b981;
+  color: white;
+}
+
+.status-badge.closed {
+  background-color: #6b7280;
+  color: white;
+}
+
+.dark-theme .status-badge.open {
+  background-color: #059669;
+  color: white;
+}
+
+.dark-theme .status-badge.closed {
+  background-color: #4b5563;
+  color: white;
+}
+
+/* Dividend styles */
+.dividend-card {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-bottom: 3px solid #5a67d8;
+}
+
+.dark-theme .dividend-card {
+  background: linear-gradient(135deg, #4c51bf 0%, #553c9a 100%);
+  border-bottom: 3px solid #4c51bf;
+}
+
+.dividend-value {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: white;
+}
+
+.dividend-type-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 0.8em;
+  font-weight: 600;
+  text-align: center;
+  min-width: 50px;
+}
+
+.dividend-type-badge.regular {
+  background-color: #10b981;
+  color: white;
+}
+
+.dividend-type-badge.special {
+  background-color: #f59e0b;
+  color: white;
+}
+
+.dividend-type-badge.liquidating {
+  background-color: #ef4444;
+  color: white;
+}
+
+.dark-theme .dividend-type-badge.regular {
+  background-color: #059669;
+  color: white;
+}
+
+.dark-theme .dividend-type-badge.special {
+  background-color: #d97706;
+  color: white;
+}
+
+.dark-theme .dividend-type-badge.liquidating {
+  background-color: #dc2626;
+  color: white;
+}
+
+.dividends-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 600px;
+  margin-top: 15px;
+}
+
+.dividends-table th,
+.dividends-table td {
+  padding: 12px;
+  text-align: right;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dividends-table th {
+  background-color: var(--card-background);
+  font-weight: 600;
+  color: var(--text-color);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.dividends-table td {
+  color: var(--text-color);
+}
+
 .profit {
   color: var(--success-color) !important;
 }
@@ -1322,6 +1447,27 @@ path.pie-slice:hover {
   border: 2px solid var(--border-color);
   background: var(--card-background);
   transition: box-shadow 0.2s, background 0.2s, border 0.2s;
+}
+
+/* Large action buttons with icon + label */
+.action-btn-lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  height: auto;
+  font-size: 1.05rem;
+  font-weight: 700;
+  border-radius: 10px;
+  flex-direction: row-reverse; /* icon on the right for RTL */
+}
+.action-btn-lg .icon { width: 20px; height: 20px; }
+.action-btn-lg .label { line-height: 1; }
+
+.helper-text {
+  font-size: 0.9rem;
+  color: var(--secondary-color);
+  margin-top: 6px;
 }
 .dark-theme .settings-actions-header button,
 .dark-theme .settings-actions-header label {
